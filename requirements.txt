@@ -1,0 +1,9 @@
+pyfast
+numpy
+h5py
+pydicom
+pillow
+pylibjpeg
+pylibjpeg-libjpeg
+pylibjpeg-openjpeg
+pyside2==5.15.2.1
