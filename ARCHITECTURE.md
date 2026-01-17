@@ -44,8 +44,8 @@ ultrasound_app/
 │  [Pan] [Zoom] [Reset] [Rotate] [Annotate▼] [Play] [Screenshot]  │
 ├───────────┬────────────────────────────────────┬────────────────┤
 │           │                                    │                │
-│ FileList  │       FAST View + Overlay          │  LayerPanel   │
-│ Widget    │     (stack_container)              │   Widget      │
+│ FileList  │       FAST View + Overlay          │  LayerPanel    │
+│ Widget    │     (stack_container)              │   Widget       │
 │           │                                    │                │
 ├───────────┴────────────────────────────────────┴────────────────┤
 │                     PlaybackControlWidget                       │
