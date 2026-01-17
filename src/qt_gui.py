@@ -47,28 +47,50 @@ class FileListWidget(QWidget):
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(5)
         
-        # Header
+        # Header row with title and icon buttons
+        header_row = QWidget()
+        header_layout = QHBoxLayout(header_row)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(5)
+        
         header = QLabel("📁 Files")
         header.setFont(QFont("Arial", 12, QFont.Bold))
         header.setStyleSheet("color: #ffffff; padding: 5px;")
-        layout.addWidget(header)
+        header_layout.addWidget(header)
         
-        # Open file button
-        self.open_btn = QPushButton("📂 Open File...")
-        self.open_btn.setStyleSheet("""
+        header_layout.addStretch()
+        
+        # Icon button style
+        icon_btn_style = """
             QPushButton {
-                background-color: #0078d4;
-                color: white;
-                border: none;
-                padding: 8px;
+                background-color: transparent;
+                border: 1px solid #3e3e42;
                 border-radius: 4px;
-                font-weight: bold;
+                font-family: 'lucide';
+                font-size: 14px;
+                color: #ffffff;
             }
             QPushButton:hover {
-                background-color: #1084d8;
+                background-color: #0078d4;
+                border-color: #0078d4;
             }
-        """)
-        layout.addWidget(self.open_btn)
+        """
+        
+        # Open File button (icon only)
+        self.open_file_btn = QPushButton("\ue24d")  # file-plus
+        self.open_file_btn.setFixedSize(28, 28)
+        self.open_file_btn.setToolTip("Open File")
+        self.open_file_btn.setStyleSheet(icon_btn_style)
+        header_layout.addWidget(self.open_file_btn)
+        
+        # Open Folder button (icon only)
+        self.open_folder_btn = QPushButton("\ue219")  # folder-open
+        self.open_folder_btn.setFixedSize(28, 28)
+        self.open_folder_btn.setToolTip("Open Folder")
+        self.open_folder_btn.setStyleSheet(icon_btn_style)
+        header_layout.addWidget(self.open_folder_btn)
+        
+        layout.addWidget(header_row)
         
         # File list
         self.file_list = QListWidget()
@@ -120,7 +142,11 @@ class FileListWidget(QWidget):
         layout.addWidget(self.info_label)
     
     def add_file(self, filepath, info=None):
-        """Add a file to the list."""
+        """Add a file to the list if not already present."""
+        # Check for duplicates
+        if self.has_file(filepath):
+            return
+        
         filename = os.path.basename(filepath)
         item = QListWidgetItem(f"📄 {filename}")
         item.setData(Qt.UserRole, filepath)
@@ -130,6 +156,22 @@ class FileListWidget(QWidget):
             item.setData(Qt.UserRole + 1, info)
         self.file_list.addItem(item)
         self.update_info()
+    
+    def has_file(self, filepath):
+        """Check if file is already in the list."""
+        for i in range(self.file_list.count()):
+            item = self.file_list.item(i)
+            if item.data(Qt.UserRole) == filepath:
+                return True
+        return False
+    
+    def select_file(self, filepath):
+        """Select a file in the list by filepath."""
+        for i in range(self.file_list.count()):
+            item = self.file_list.item(i)
+            if item.data(Qt.UserRole) == filepath:
+                self.file_list.setCurrentItem(item)
+                return
     
     def update_patient_info(self, metadata):
         """Update patient info panel with DICOM metadata."""
@@ -587,7 +629,8 @@ class UltrasoundViewerWindow(QMainWindow):
     def connect_signals(self):
         """Connect widget signals to slots."""
         # File panel
-        self.file_panel.open_btn.clicked.connect(self.open_file_dialog)
+        self.file_panel.open_file_btn.clicked.connect(self.open_file_dialog)
+        self.file_panel.open_folder_btn.clicked.connect(self.open_folder_dialog)
         self.file_panel.file_list.itemClicked.connect(self.on_file_selected)
         
         # Toolbar - tools
@@ -637,6 +680,40 @@ class UltrasoundViewerWindow(QMainWindow):
         )
         if filepath:
             self.load_file(filepath)
+    
+    @Slot()
+    def open_folder_dialog(self):
+        """Open folder dialog to select DICOM directory."""
+        folder_path = QFileDialog.getExistingDirectory(
+            self,
+            "Open DICOM Folder",
+            "",
+            QFileDialog.ShowDirsOnly
+        )
+        if folder_path:
+            self.load_folder(folder_path)
+    
+    def load_folder(self, folder_path):
+        """Load all DICOM files from a folder."""
+        import glob
+        
+        # Find all DICOM files recursively
+        dcm_files = glob.glob(os.path.join(folder_path, "**", "*.dcm"), recursive=True)
+        dcm_files.sort()
+        
+        if not dcm_files:
+            QMessageBox.information(self, "No Files Found", "No DICOM files found in the selected folder.")
+            return
+        
+        self.status_bar.showMessage(f"Found {len(dcm_files)} DICOM files")
+        
+        # Add all files to list
+        for filepath in dcm_files:
+            self.file_panel.add_file(filepath)
+        
+        # Load the first file
+        if dcm_files:
+            self.load_file(dcm_files[0])
     
     def load_file(self, filepath):
         """Load an ultrasound file."""
@@ -694,8 +771,9 @@ class UltrasoundViewerWindow(QMainWindow):
                 QMessageBox.critical(self, "Error", "Failed to load file")
                 return
             
-            # Add to file list
+            # Add to file list and select
             self.file_panel.add_file(filepath)
+            self.file_panel.select_file(filepath)
             self.current_file = filepath
             
             # Setup FAST pipeline
