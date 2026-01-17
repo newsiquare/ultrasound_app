@@ -92,6 +92,27 @@ class FileListWidget(QWidget):
         """)
         layout.addWidget(self.file_list)
         
+        # Patient Info Section
+        patient_header = QLabel("👤 Patient Info")
+        patient_header.setFont(QFont("Arial", 11, QFont.Bold))
+        patient_header.setStyleSheet("color: #ffffff; padding: 5px 5px 0px 5px; margin-top: 8px;")
+        layout.addWidget(patient_header)
+        
+        # Patient info container
+        self.patient_info = QLabel("No file loaded")
+        self.patient_info.setStyleSheet("""
+            QLabel {
+                color: #aaaaaa;
+                font-size: 11px;
+                padding: 5px;
+                background-color: #2d2d30;
+                border: 1px solid #3e3e42;
+                border-radius: 4px;
+            }
+        """)
+        self.patient_info.setWordWrap(True)
+        layout.addWidget(self.patient_info)
+        
         # Info label
         self.info_label = QLabel("No files loaded")
         self.info_label.setStyleSheet("color: #888888; font-size: 11px;")
@@ -105,8 +126,39 @@ class FileListWidget(QWidget):
         item.setData(Qt.UserRole, filepath)
         if info:
             item.setToolTip(f"{filepath}\n{info}")
+            # Store metadata for display
+            item.setData(Qt.UserRole + 1, info)
         self.file_list.addItem(item)
         self.update_info()
+    
+    def update_patient_info(self, metadata):
+        """Update patient info panel with DICOM metadata."""
+        if not metadata:
+            self.patient_info.setText("No metadata available")
+            return
+        
+        lines = []
+        if 'PatientName' in metadata:
+            lines.append(f"<b>Patient:</b> {metadata['PatientName']}")
+        if 'StudyDate' in metadata:
+            date = metadata['StudyDate']
+            # Format YYYYMMDD to YYYY/MM/DD
+            if len(date) == 8:
+                date = f"{date[:4]}/{date[4:6]}/{date[6:]}"
+            lines.append(f"<b>Date:</b> {date}")
+        if 'Modality' in metadata:
+            lines.append(f"<b>Modality:</b> {metadata['Modality']}")
+        if 'Manufacturer' in metadata:
+            lines.append(f"<b>Device:</b> {metadata['Manufacturer']}")
+        if 'InstitutionName' in metadata:
+            lines.append(f"<b>Institution:</b> {metadata['InstitutionName']}")
+        if 'NumberOfFrames' in metadata:
+            lines.append(f"<b>Frames:</b> {metadata['NumberOfFrames']}")
+        
+        if lines:
+            self.patient_info.setText("<br>".join(lines))
+        else:
+            self.patient_info.setText("No metadata available")
     
     def update_info(self):
         """Update the info label."""
@@ -179,6 +231,13 @@ class ToolbarWidget(QToolBar):
         self.rotate_action.setToolTip("Rotate image")
         self.tool_group.addAction(self.rotate_action)
         self.addAction(self.rotate_action)
+        
+        # Window/Level tool
+        self.wl_action = QAction("☀️ W/L", self)
+        self.wl_action.setCheckable(True)
+        self.wl_action.setToolTip("Window/Level: Drag up/down for brightness, left/right for contrast")
+        self.tool_group.addAction(self.wl_action)
+        self.addAction(self.wl_action)
         
         self.addSeparator()
         
@@ -353,6 +412,7 @@ class UltrasoundViewerWindow(QMainWindow):
         self.fast_widget = None
         self.computation_thread = None
         self.current_streamer = None
+        self.renderer = None
         self.is_playing = True
         self.current_file = None
         self.total_frames = 0
@@ -362,6 +422,12 @@ class UltrasoundViewerWindow(QMainWindow):
         self.current_tool = 'pan'
         self.current_annotation_tool = None
         self.annotations = []  # List of all annotations
+        
+        # Window/Level state
+        self.intensity_level = 127.0
+        self.intensity_window = 255.0
+        self._wl_dragging = False
+        self._wl_start_pos = None
         
         self.setup_ui()
         self.apply_dark_theme()
@@ -529,6 +595,7 @@ class UltrasoundViewerWindow(QMainWindow):
         self.toolbar.zoom_action.triggered.connect(lambda: self.set_tool('zoom'))
         self.toolbar.reset_action.triggered.connect(self.reset_view)
         self.toolbar.rotate_action.triggered.connect(self.rotate_image)
+        self.toolbar.wl_action.triggered.connect(lambda: self.set_tool('wl'))
         
         # Annotation tools
         self.toolbar.annotate_button.clicked.connect(lambda: self.set_tool('annotate'))
@@ -552,6 +619,7 @@ class UltrasoundViewerWindow(QMainWindow):
         # Annotation overlay <-> Layer panel
         if self.annotation_overlay:
             self.annotation_overlay.annotation_added.connect(self.layer_panel.add_annotation)
+            self.annotation_overlay.wl_changed.connect(self.on_wl_changed)
         self.layer_panel.annotation_deleted.connect(self.on_annotation_deleted)
         self.layer_panel.visibility_changed.connect(self.on_annotation_visibility_changed)
         
@@ -577,6 +645,47 @@ class UltrasoundViewerWindow(QMainWindow):
         try:
             # Import pipeline function
             from .pipelines import create_playback_pipeline
+            from .annotations import Annotation
+            
+            # Extract DICOM metadata for patient info panel
+            dicom_metadata = {}
+            pixel_spacing = None
+            if filepath.lower().endswith('.dcm'):
+                try:
+                    import pydicom
+                    ds = pydicom.dcmread(filepath, stop_before_pixels=True, force=True)
+                    dicom_metadata = {
+                        'PatientName': str(ds.get('PatientName', 'Anonymous')),
+                        'StudyDate': str(ds.get('StudyDate', '')),
+                        'Modality': str(ds.get('Modality', 'US')),
+                        'Manufacturer': str(ds.get('Manufacturer', '')),
+                        'InstitutionName': str(ds.get('InstitutionName', '')),
+                        'NumberOfFrames': str(ds.get('NumberOfFrames', 1)),
+                    }
+                    
+                    # Extract PixelSpacing for real measurements
+                    # Try standard PixelSpacing first
+                    if hasattr(ds, 'PixelSpacing') and ds.PixelSpacing:
+                        pixel_spacing = float(ds.PixelSpacing[0])  # mm/pixel
+                    # For ultrasound, try SequenceOfUltrasoundRegions
+                    elif hasattr(ds, 'SequenceOfUltrasoundRegions'):
+                        regions = ds.SequenceOfUltrasoundRegions
+                        if regions and len(regions) > 0:
+                            region = regions[0]
+                            if hasattr(region, 'PhysicalDeltaX'):
+                                # PhysicalDeltaX is in cm, convert to mm
+                                pixel_spacing = float(region.PhysicalDeltaX) * 10
+                    
+                    if pixel_spacing:
+                        print(f"Pixel spacing: {pixel_spacing:.4f} mm/pixel")
+                except Exception as e:
+                    print(f"Could not read DICOM metadata: {e}")
+            
+            # Set pixel spacing for annotations
+            Annotation.set_pixel_spacing(pixel_spacing)
+            
+            # Update patient info panel
+            self.file_panel.update_patient_info(dicom_metadata)
             
             # Create streamer
             self.current_streamer = create_playback_pipeline(filepath)
@@ -610,14 +719,14 @@ class UltrasoundViewerWindow(QMainWindow):
             self.computation_thread.addView(self.fast_view)
             
             # Create renderer
-            renderer = fast.ImageRenderer.create()
-            renderer.connect(self.current_streamer)
-            renderer.setIntensityLevel(127.5)
-            renderer.setIntensityWindow(255)
+            self.renderer = fast.ImageRenderer.create()
+            self.renderer.connect(self.current_streamer)
+            self.renderer.setIntensityLevel(self.intensity_level)
+            self.renderer.setIntensityWindow(self.intensity_window)
             
             # Clear and add renderer
             self.fast_view.removeAllRenderers()
-            self.fast_view.addRenderer(renderer)
+            self.fast_view.addRenderer(self.renderer)
             self.fast_view.reinitialize() # 重新初始化整個 View
             
             # Start computation thread
@@ -744,6 +853,12 @@ class UltrasoundViewerWindow(QMainWindow):
                 pass
             elif tool_name == 'zoom':
                 self.status_bar.showMessage("Zoom: Use mouse scroll to zoom in/out")
+            elif tool_name == 'wl':
+                # Enable overlay for W/L drag
+                if self.annotation_overlay:
+                    self.annotation_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+                    self.annotation_overlay.set_tool('wl')
+                self.status_bar.showMessage(f"W/L: Drag to adjust | W:{self.intensity_window:.0f} L:{self.intensity_level:.0f}")
             elif tool_name == 'annotate':
                 self.status_bar.showMessage("Annotate: Click dropdown to select tool")
     
@@ -775,6 +890,23 @@ class UltrasoundViewerWindow(QMainWindow):
         """Handle annotation visibility toggle from layer panel."""
         if self.annotation_overlay:
             self.annotation_overlay.update()  # Refresh display
+    
+    def on_wl_changed(self, delta_window, delta_level):
+        """Handle Window/Level drag changes."""
+        # Update values (clamp to reasonable ranges)
+        self.intensity_window = max(1, min(1000, self.intensity_window + delta_window))
+        self.intensity_level = max(0, min(500, self.intensity_level + delta_level))
+        
+        # Apply to renderer
+        if self.renderer:
+            try:
+                self.renderer.setIntensityWindow(self.intensity_window)
+                self.renderer.setIntensityLevel(self.intensity_level)
+            except:
+                pass
+        
+        # Update status bar
+        self.status_bar.showMessage(f"W/L: W:{self.intensity_window:.0f} L:{self.intensity_level:.0f}")
     
     def reset_view(self):
         """Reset view to default zoom and pan."""

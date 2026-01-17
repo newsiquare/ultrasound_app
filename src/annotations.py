@@ -18,6 +18,12 @@ class Annotation:
     """Base class for all annotations."""
     
     _id_counter = 0
+    _pixel_spacing = None  # mm per pixel, shared across annotations
+    
+    @classmethod
+    def set_pixel_spacing(cls, spacing):
+        """Set pixel spacing in mm/pixel."""
+        cls._pixel_spacing = spacing
     
     def __init__(self, color=QColor(0, 255, 255)):  # Cyan color
         Annotation._id_counter += 1
@@ -27,6 +33,27 @@ class Annotation:
         self.completed = False
         self.selected = False
         self.visible = True  # For layer panel visibility toggle
+    
+    def _px_to_mm(self, pixels):
+        """Convert pixels to mm if pixel_spacing available."""
+        if Annotation._pixel_spacing:
+            return pixels * Annotation._pixel_spacing
+        return None
+    
+    def _format_length(self, pixels):
+        """Format length with unit (mm or px)."""
+        mm = self._px_to_mm(pixels)
+        if mm is not None:
+            return f"{mm:.2f} mm"
+        return f"{pixels:.1f} px"
+    
+    def _format_area(self, pixels_sq):
+        """Format area with unit (cm² or px²)."""
+        if Annotation._pixel_spacing:
+            mm_sq = pixels_sq * (Annotation._pixel_spacing ** 2)
+            cm_sq = mm_sq / 100  # mm² to cm²
+            return f"{cm_sq:.2f} cm²"
+        return f"{pixels_sq:.0f} px²"
     
     def add_point(self, point):
         """Add a point to the annotation."""
@@ -82,13 +109,13 @@ class LineAnnotation(Annotation):
     def _draw_measurement(self, painter):
         if len(self.points) < 2:
             return
-        length = self._calculate_length()
+        length_px = self._calculate_length()
         mid = QPoint((self.points[0].x() + self.points[1].x()) // 2,
                      (self.points[0].y() + self.points[1].y()) // 2 - 10)
         
         painter.setFont(QFont("Arial", 10))
         painter.setPen(QPen(Qt.white))
-        painter.drawText(mid, f"L: {length:.1f}px")
+        painter.drawText(mid, f"L: {self._format_length(length_px)}")
     
     def _calculate_length(self):
         if len(self.points) < 2:
@@ -98,7 +125,8 @@ class LineAnnotation(Annotation):
         return math.sqrt(dx*dx + dy*dy)
     
     def get_measurements(self):
-        return {"Length": f"{self._calculate_length():.1f}px"}
+        length_px = self._calculate_length()
+        return {"Length": self._format_length(length_px)}
     
     def get_name(self):
         return f"Line {self.id}"
@@ -130,7 +158,7 @@ class RectAnnotation(Annotation):
         label_pos = QPoint(rect.left(), rect.top() - 5)
         painter.setFont(QFont("Arial", 10))
         painter.setPen(QPen(Qt.white))
-        painter.drawText(label_pos, f"W:{w} H:{h} A:{area}")
+        painter.drawText(label_pos, f"W:{self._format_length(w)} H:{self._format_length(h)} A:{self._format_area(area)}")
     
     def get_measurements(self):
         if len(self.points) < 2:
@@ -138,9 +166,9 @@ class RectAnnotation(Annotation):
         rect = QRect(self.points[0], self.points[1]).normalized()
         w, h = rect.width(), rect.height()
         return {
-            "Width": f"{w}px",
-            "Height": f"{h}px",
-            "Area": f"{w * h}px²"
+            "Width": self._format_length(w),
+            "Height": self._format_length(h),
+            "Area": self._format_area(w * h)
         }
     
     def get_name(self):
@@ -179,14 +207,14 @@ class CircleAnnotation(Annotation):
         
         painter.setFont(QFont("Arial", 10))
         painter.setPen(QPen(Qt.white))
-        painter.drawText(label_pos, f"R:{radius} A:{area:.0f}")
+        painter.drawText(label_pos, f"R:{self._format_length(radius)} A:{self._format_area(area)}")
     
     def get_measurements(self):
         radius = self._calculate_radius()
         area = math.pi * radius * radius
         return {
-            "Radius": f"{radius}px",
-            "Area": f"{area:.1f}px²"
+            "Radius": self._format_length(radius),
+            "Area": self._format_area(area)
         }
     
     def get_name(self):
@@ -227,6 +255,7 @@ class AnnotationOverlay(QWidget):
     """Transparent overlay widget for drawing annotations on top of the image."""
     
     annotation_added = Signal(object)  # Emitted when annotation is completed
+    wl_changed = Signal(float, float)  # Emitted when W/L changes (delta_window, delta_level)
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -238,6 +267,9 @@ class AnnotationOverlay(QWidget):
         self.current_annotation = None
         self.current_tool = None
         self.is_drawing = False
+        
+        # W/L drag state
+        self._wl_start_pos = None
     
     def set_tool(self, tool_type):
         """Set the current annotation tool."""
@@ -258,8 +290,16 @@ class AnnotationOverlay(QWidget):
             self.current_annotation.draw(painter)
     
     def mousePressEvent(self, event):
-        """Start drawing annotation."""
-        if event.button() != Qt.LeftButton or not self.current_tool:
+        """Start drawing annotation or W/L adjustment."""
+        if event.button() != Qt.LeftButton:
+            return
+        
+        # Handle W/L mode
+        if self.current_tool == 'wl':
+            self._wl_start_pos = event.pos()
+            return
+        
+        if not self.current_tool:
             return
         
         self.is_drawing = True
@@ -282,7 +322,17 @@ class AnnotationOverlay(QWidget):
         self.update()
     
     def mouseMoveEvent(self, event):
-        """Update annotation while dragging."""
+        """Update annotation while dragging or adjust W/L."""
+        # Handle W/L mode
+        if self.current_tool == 'wl' and self._wl_start_pos is not None:
+            pos = event.pos()
+            # Horizontal = window (contrast), Vertical = level (brightness)
+            delta_window = (pos.x() - self._wl_start_pos.x()) * 1.0
+            delta_level = -(pos.y() - self._wl_start_pos.y()) * 1.0  # Invert Y
+            self._wl_start_pos = pos
+            self.wl_changed.emit(delta_window, delta_level)
+            return
+        
         if not self.is_drawing or not self.current_annotation:
             return
         
@@ -298,8 +348,16 @@ class AnnotationOverlay(QWidget):
         self.update()
     
     def mouseReleaseEvent(self, event):
-        """Complete the annotation."""
-        if event.button() != Qt.LeftButton or not self.is_drawing:
+        """Complete the annotation or W/L adjustment."""
+        if event.button() != Qt.LeftButton:
+            return
+        
+        # Handle W/L mode
+        if self.current_tool == 'wl':
+            self._wl_start_pos = None
+            return
+        
+        if not self.is_drawing:
             return
         
         self.is_drawing = False
