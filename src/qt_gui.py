@@ -243,43 +243,38 @@ class ToolbarWidget(QToolBar):
         """)
         
         # Create tool buttons
-        self.tool_group = QActionGroup(self)
-        self.tool_group.setExclusive(True)
+        # Note: We manage exclusivity manually in set_tool to allow toggling off (returning to 'none')
+
         
-        # Pan tool
-        self.pan_action = QAction("🖐️ Pan", self)
-        self.pan_action.setCheckable(True)
-        self.pan_action.setChecked(True)
-        self.pan_action.setToolTip("Pan (drag to move)")
-        self.tool_group.addAction(self.pan_action)
-        self.addAction(self.pan_action)
+
         
         # Zoom tool
         self.zoom_action = QAction("🔍 Zoom", self)
         self.zoom_action.setCheckable(True)
         self.zoom_action.setToolTip("Zoom (scroll to zoom)")
-        self.tool_group.addAction(self.zoom_action)
         self.addAction(self.zoom_action)
-        
-        # Reset View (not checkable - just an action)
-        self.reset_action = QAction("🎯 Reset", self)
-        self.reset_action.setCheckable(False)
-        self.reset_action.setToolTip("Reset view to default (fit to window)")
-        self.addAction(self.reset_action)
         
         # Rotate tool
         self.rotate_action = QAction("🔄 Rotate", self)
         self.rotate_action.setCheckable(True)
         self.rotate_action.setToolTip("Rotate image")
-        self.tool_group.addAction(self.rotate_action)
         self.addAction(self.rotate_action)
+
+                
+        # Reset View (not checkable - just an action)
+        self.reset_action = QAction("🎯 Reset", self)
+        self.reset_action.setCheckable(False)
+        self.reset_action.setToolTip("Reset view to default (fit to window)")
+        self.addAction(self.reset_action)
+
         
         # Window/Level tool
         self.wl_action = QAction("☀️ W/L", self)
         self.wl_action.setCheckable(True)
+        self.wl_action.setCheckable(True)
         self.wl_action.setToolTip("Window/Level: Drag up/down for brightness, left/right for contrast")
-        self.tool_group.addAction(self.wl_action)
         self.addAction(self.wl_action)
+
         
         self.addSeparator()
         
@@ -461,7 +456,7 @@ class UltrasoundViewerWindow(QMainWindow):
         self.current_frame = 0
         self.zoom_level = 1.0
         self.rotation_angle = 0
-        self.current_tool = 'pan'
+        self.current_tool = 'none'
         self.current_annotation_tool = None
         self.annotations = []  # List of all annotations
         
@@ -634,14 +629,22 @@ class UltrasoundViewerWindow(QMainWindow):
         self.file_panel.file_list.itemClicked.connect(self.on_file_selected)
         
         # Toolbar - tools
-        self.toolbar.pan_action.triggered.connect(lambda: self.set_tool('pan'))
-        self.toolbar.zoom_action.triggered.connect(lambda: self.set_tool('zoom'))
+        self.toolbar.zoom_action.triggered.connect(lambda checked: self.set_tool('zoom' if checked else 'none'))
         self.toolbar.reset_action.triggered.connect(self.reset_view)
+        # Rotate is stateless (immediate action), but if it were a tool mode it would need similar handling. 
+        # Checking implementation: rotate_action calls rotate_image which is an immediate action, not a tool mode.
+        # But wait, rotate_action IS checkable in UI setup (line 266). 
+        # Let's check rotate_image implementation. 
+        # rotate_image just increments angle. It shouldn't be checkable or if it is, it's weird.
+        # Given user request "Zoom and Rotate tools might have similar problems", I should check.
+        # rotate_image implementation (line 1031) just rotates. It doesn't set 'rotate' mode.
+        # So rotate doesn't need this fix, BUT zoom does.
+        
         self.toolbar.rotate_action.triggered.connect(self.rotate_image)
-        self.toolbar.wl_action.triggered.connect(lambda: self.set_tool('wl'))
+        self.toolbar.wl_action.triggered.connect(lambda checked: self.set_tool('wl' if checked else 'none'))
         
         # Annotation tools
-        self.toolbar.annotate_button.clicked.connect(lambda: self.set_tool('annotate'))
+        self.toolbar.annotate_button.clicked.connect(lambda checked: self.set_tool('annotate' if checked else 'none'))
         self.toolbar.line_action.triggered.connect(lambda: self.set_annotation_tool('line'))
         self.toolbar.rect_action.triggered.connect(lambda: self.set_annotation_tool('rectangle'))
         self.toolbar.circle_action.triggered.connect(lambda: self.set_annotation_tool('circle'))
@@ -920,14 +923,26 @@ class UltrasoundViewerWindow(QMainWindow):
         self.current_tool = tool_name
         self.status_bar.showMessage(f"Tool: {tool_name.capitalize()}")
         
+        # Manually update button states (exclusive selection)
+        # Block signals to prevent recursive calls if needed, though triggered/clicked shouldn't loop
+        self.toolbar.zoom_action.setChecked(tool_name == 'zoom')
+        self.toolbar.wl_action.setChecked(tool_name == 'wl')
+        self.toolbar.annotate_button.setChecked(tool_name == 'annotate')
+        # Rotate is stateless/immediate, so we don't hold it checked usually, 
+        # but if we tracked it as a mode we would.
+        # Here we leave it alone or uncheck it if it was checkable? 
+        # The rotate_action is checkable=True in setup.
+        self.toolbar.rotate_action.setChecked(False) # Rotate is immediate action, always reset
+
         # Disable annotation overlay when not in annotate mode
         if tool_name != 'annotate' and self.annotation_overlay:
             self.annotation_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            self.annotation_overlay.set_tool(None)
         
         # Update FAST view interaction based on tool
         if self.fast_view:
             if tool_name == 'pan':
-                # Default pan mode
+                # Default pan mode (currently removed/disabled)
                 pass
             elif tool_name == 'zoom':
                 self.status_bar.showMessage("Zoom: Use mouse scroll to zoom in/out")
