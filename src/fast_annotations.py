@@ -215,9 +215,9 @@ class FASTAnnotationManager:
     def line_renderer(self) -> fast.LineRenderer:
         """Get or create LineRenderer."""
         if self._line_renderer is None:
-            # Create with cyan color, 2.0 line width, drawOnTop=True
+            # Create with cyan color, 0.5 line width, drawOnTop=True
             self._line_renderer = fast.LineRenderer.create(
-                fast.Color.Cyan(), 2.0, True
+                fast.Color.Cyan(), 0.5, True
             )
         return self._line_renderer
     
@@ -372,14 +372,14 @@ class FASTAnnotationManager:
                     except Exception:
                         pass
                     self._line_renderer = fast.LineRenderer.create(
-                        fast.Color.Cyan(), 2.0, True
+                        fast.Color.Cyan(), 0.5, True
                     )
                     self._line_renderer.addInputData(self._current_mesh)
                     self.view.addRenderer(self._line_renderer)
                 else:
                     # First time - just add input
                     self._line_renderer = fast.LineRenderer.create(
-                        fast.Color.Cyan(), 2.0, True
+                        fast.Color.Cyan(), 0.5, True
                     )
                     self._line_renderer.addInputData(self._current_mesh)
                 

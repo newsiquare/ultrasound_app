@@ -276,6 +276,15 @@ class ToolbarWidget(QToolBar):
         self.annotate_button.setToolTip("Annotation tools")
         self.annotate_button.setPopupMode(QToolButton.MenuButtonPopup)
         self.annotate_button.setCheckable(True)
+        # Set explicit size to ensure dropdown arrow has enough space
+        self.annotate_button.setStyleSheet("""
+            QToolButton {
+                padding-right: 20px;
+            }
+            QToolButton::menu-button {
+                width: 20px;
+            }
+        """)
         
         # Create annotation menu
         self.annotate_menu = QMenu(self)
@@ -285,24 +294,26 @@ class ToolbarWidget(QToolBar):
                 color: #ffffff;
                 border: 1px solid #3e3e42;
                 border-radius: 4px;
-                padding: 5px;
+                padding: 2px;
             }
             QMenu::item {
-                padding: 8px 20px;
+                padding: 6px 10px;
+                margin: 0px;
                 border-radius: 3px;
             }
             QMenu::item:selected {
                 background-color: #0078d4;
             }
+            QMenu::indicator {
+                width: 0px;
+                height: 0px;
+            }
         """)
         
-        # Add annotation tools
+        # Add annotation tools (use non-checkable actions to avoid indicator space)
         self.line_action = self.annotate_menu.addAction("─ Line")
-        self.line_action.setCheckable(True)
         self.rect_action = self.annotate_menu.addAction("▭ Rectangle")
-        self.rect_action.setCheckable(True)
         self.polygon_action = self.annotate_menu.addAction("⬡ Polygon")
-        self.polygon_action.setCheckable(True)
         
         # Group for exclusive selection
         self.annotate_group = QActionGroup(self)
