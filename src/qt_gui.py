@@ -808,7 +808,7 @@ class UltrasoundViewerWindow(QMainWindow):
             # Clear and add renderer
             self.fast_view.removeAllRenderers()
             self.fast_view.addRenderer(self.renderer)
-            self.fast_view.reinitialize() # 重新初始化整個 View
+            # Note: Do NOT call reinitialize() here - it resets internal size to 400x300
             
             # Start computation thread
             self.computation_thread.start()
@@ -1006,21 +1006,13 @@ class UltrasoundViewerWindow(QMainWindow):
         self.zoom_level = 1.0
         self.rotation_angle = 0
         
-        if self.fast_widget:
+        if self.fast_view:
             try:
-                # Simulate pressing 'r' key which is FAST's built-in reset shortcut
-                from PySide2.QtGui import QKeyEvent
-                from PySide2.QtCore import QEvent
+                # Directly call FAST API to reset camera (fits view to content)
+                self.fast_view.setAutoUpdateCamera(True)
+                self.fast_view.recalculateCamera()
                 
-                # Create and send key press event for 'r'
-                key_event = QKeyEvent(QEvent.KeyPress, Qt.Key_R, Qt.NoModifier, 'r')
-                QApplication.sendEvent(self.fast_widget, key_event)
-                
-                # Send key release event
-                key_release = QKeyEvent(QEvent.KeyRelease, Qt.Key_R, Qt.NoModifier, 'r')
-                QApplication.sendEvent(self.fast_widget, key_release)
-                
-                self.status_bar.showMessage("View reset to default (press 'r')")
+                self.status_bar.showMessage("View reset to default")
             except Exception as e:
                 self.status_bar.showMessage(f"Reset: {e}")
     
