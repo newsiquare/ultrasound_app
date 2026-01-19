@@ -243,16 +243,7 @@ class ToolbarWidget(QToolBar):
         """)
         
         # Create tool buttons
-        # Note: We manage exclusivity manually in set_tool to allow toggling off (returning to 'none')
-
-        
-
-        
-        # Zoom tool
-        self.zoom_action = QAction("🔍 Zoom", self)
-        self.zoom_action.setCheckable(True)
-        self.zoom_action.setToolTip("Zoom (scroll to zoom)")
-        self.addAction(self.zoom_action)
+        # Note: Zoom (scroll wheel) and Pan (right-click drag) are always available via FAST's built-in controls
         
         # Rotate tool
         self.rotate_action = QAction("🔄 Rotate", self)
@@ -522,17 +513,16 @@ class UltrasoundViewerWindow(QMainWindow):
             container_layout.setContentsMargins(0, 0, 0, 0)
             container_layout.addWidget(self.fast_widget)
             
-            # Add annotation overlay as child (will be positioned manually)
-            self.annotation_overlay = AnnotationOverlay(stack_container)
-            self.annotation_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)  # Start transparent
-            self.annotation_overlay.setGeometry(self.fast_widget.geometry())
-            self.annotation_overlay.raise_()  # Ensure it's on top
+            # Add annotation overlay as child of fast_widget (not stack_container)
+            # This ensures proper event propagation to the OpenGL widget
+            self.annotation_overlay = AnnotationOverlay(self.fast_widget)
+            self.annotation_overlay.setGeometry(0, 0, self.fast_widget.width(), self.fast_widget.height())
             
             # Connect resize to update overlay size and reset camera
             def update_overlay_size():
                 if self.annotation_overlay and self.fast_widget:
                     self.annotation_overlay.setGeometry(0, 0, 
-                        stack_container.width(), stack_container.height())
+                        self.fast_widget.width(), self.fast_widget.height())
             
             def on_resize(event):
                 update_overlay_size()
@@ -628,18 +618,8 @@ class UltrasoundViewerWindow(QMainWindow):
         self.file_panel.open_folder_btn.clicked.connect(self.open_folder_dialog)
         self.file_panel.file_list.itemClicked.connect(self.on_file_selected)
         
-        # Toolbar - tools
-        self.toolbar.zoom_action.triggered.connect(lambda checked: self.set_tool('zoom' if checked else 'none'))
+        # Toolbar - tools (Zoom and Pan are always available via FAST's built-in controls)
         self.toolbar.reset_action.triggered.connect(self.reset_view)
-        # Rotate is stateless (immediate action), but if it were a tool mode it would need similar handling. 
-        # Checking implementation: rotate_action calls rotate_image which is an immediate action, not a tool mode.
-        # But wait, rotate_action IS checkable in UI setup (line 266). 
-        # Let's check rotate_image implementation. 
-        # rotate_image just increments angle. It shouldn't be checkable or if it is, it's weird.
-        # Given user request "Zoom and Rotate tools might have similar problems", I should check.
-        # rotate_image implementation (line 1031) just rotates. It doesn't set 'rotate' mode.
-        # So rotate doesn't need this fix, BUT zoom does.
-        
         self.toolbar.rotate_action.triggered.connect(self.rotate_image)
         self.toolbar.wl_action.triggered.connect(lambda checked: self.set_tool('wl' if checked else 'none'))
         
@@ -924,15 +904,9 @@ class UltrasoundViewerWindow(QMainWindow):
         self.status_bar.showMessage(f"Tool: {tool_name.capitalize()}")
         
         # Manually update button states (exclusive selection)
-        # Block signals to prevent recursive calls if needed, though triggered/clicked shouldn't loop
-        self.toolbar.zoom_action.setChecked(tool_name == 'zoom')
         self.toolbar.wl_action.setChecked(tool_name == 'wl')
         self.toolbar.annotate_button.setChecked(tool_name == 'annotate')
-        # Rotate is stateless/immediate, so we don't hold it checked usually, 
-        # but if we tracked it as a mode we would.
-        # Here we leave it alone or uncheck it if it was checkable? 
-        # The rotate_action is checkable=True in setup.
-        self.toolbar.rotate_action.setChecked(False) # Rotate is immediate action, always reset
+        self.toolbar.rotate_action.setChecked(False)  # Rotate is immediate action, always reset
 
         # Disable annotation overlay when not in annotate mode
         if tool_name != 'annotate' and self.annotation_overlay:
@@ -941,12 +915,7 @@ class UltrasoundViewerWindow(QMainWindow):
         
         # Update FAST view interaction based on tool
         if self.fast_view:
-            if tool_name == 'pan':
-                # Default pan mode (currently removed/disabled)
-                pass
-            elif tool_name == 'zoom':
-                self.status_bar.showMessage("Zoom: Use mouse scroll to zoom in/out")
-            elif tool_name == 'wl':
+            if tool_name == 'wl':
                 # Enable overlay for W/L drag
                 if self.annotation_overlay:
                     self.annotation_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, False)

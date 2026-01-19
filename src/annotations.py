@@ -259,7 +259,7 @@ class AnnotationOverlay(QWidget):
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)  # Default transparent, enable only for annotation/W/L modes
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setMouseTracking(True)
         
