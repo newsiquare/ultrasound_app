@@ -1,5 +1,5 @@
 import fast
-from .pipelines import create_display_pipeline
+from ..src.pipelines import create_display_pipeline
 
 class UltrasoundWindow:
     """
@@ -29,7 +29,7 @@ class UltrasoundWindow:
         
         # Setup the pipeline based on mode
         if self.mode == 'playback' and self.filepath:
-            from .pipelines import create_playback_pipeline
+            from ..src.pipelines import create_playback_pipeline
             self.importer = create_playback_pipeline(self.filepath)
             if self.importer is None:
                 print("Failed to initialize pipeline. Exiting.")

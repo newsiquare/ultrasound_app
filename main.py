@@ -100,14 +100,14 @@ Examples:
         # Extract file info for display
         file_info = get_file_info(args.file)
         
-        from src.gui import UltrasoundWindow
+        from _backup.gui import UltrasoundWindow
         window = UltrasoundWindow(mode='playback', filepath=args.file, file_info=file_info)
         window.run()
         
     elif args.stream:
         print("Starting streaming mode...")
         print("Note: Streaming requires a configured source in pipelines.py")
-        from src.gui import UltrasoundWindow
+        from _backup.gui import UltrasoundWindow
         window = UltrasoundWindow(mode='stream')
         window.run()
         

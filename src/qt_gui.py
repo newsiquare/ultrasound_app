@@ -33,6 +33,7 @@ from PySide2.QtGui import QIcon, QFont, QPalette, QColor
 from shiboken2 import wrapInstance
 
 from .annotations import AnnotationOverlay, LayerPanelWidget
+from .fast_annotations import FASTAnnotationManager, CoordinateConverter
 
 
 class FileListWidget(QWidget):
@@ -300,17 +301,14 @@ class ToolbarWidget(QToolBar):
         self.line_action.setCheckable(True)
         self.rect_action = self.annotate_menu.addAction("▭ Rectangle")
         self.rect_action.setCheckable(True)
-        self.circle_action = self.annotate_menu.addAction("○ Circle")
-        self.circle_action.setCheckable(True)
-        self.freeform_action = self.annotate_menu.addAction("✎ Freeform")
-        self.freeform_action.setCheckable(True)
+        self.polygon_action = self.annotate_menu.addAction("⬡ Polygon")
+        self.polygon_action.setCheckable(True)
         
         # Group for exclusive selection
         self.annotate_group = QActionGroup(self)
         self.annotate_group.addAction(self.line_action)
         self.annotate_group.addAction(self.rect_action)
-        self.annotate_group.addAction(self.circle_action)
-        self.annotate_group.addAction(self.freeform_action)
+        self.annotate_group.addAction(self.polygon_action)
         self.annotate_group.setExclusive(True)
         
         self.annotate_button.setMenu(self.annotate_menu)
@@ -451,6 +449,9 @@ class UltrasoundViewerWindow(QMainWindow):
         self.current_annotation_tool = None
         self.annotations = []  # List of all annotations
         
+        # FAST Annotation Manager (will be initialized after fast_view is created)
+        self.fast_annotation_manager = None
+        
         # Window/Level state
         self.intensity_level = 127.0
         self.intensity_window = 255.0
@@ -518,11 +519,19 @@ class UltrasoundViewerWindow(QMainWindow):
             self.annotation_overlay = AnnotationOverlay(self.fast_widget)
             self.annotation_overlay.setGeometry(0, 0, self.fast_widget.width(), self.fast_widget.height())
             
+            # （1/2）安裝平移事件過濾器 (forward events to FAST view)
+            self.annotation_overlay.installEventFilter(self)
+
             # Connect resize to update overlay size and reset camera
             def update_overlay_size():
                 if self.annotation_overlay and self.fast_widget:
                     self.annotation_overlay.setGeometry(0, 0, 
                         self.fast_widget.width(), self.fast_widget.height())
+                    # Update coordinate converter with new widget size
+                    if self.fast_annotation_manager:
+                        self.fast_annotation_manager.coord_converter.set_widget_size(
+                            self.fast_widget.width(), self.fast_widget.height()
+                        )
             
             def on_resize(event):
                 update_overlay_size()
@@ -587,13 +596,18 @@ class UltrasoundViewerWindow(QMainWindow):
             self.fast_widget = wrapInstance(int(self.fast_view.asQGLWidget()), QGLWidget)
             self.fast_widget.setMinimumSize(400, 300)
             
-            # Install event filter for interaction
-            self.installEventFilter(self.fast_widget)
+            # Enable proper mouse/keyboard interaction (critical for FAST zoom/pan)
+            self.fast_widget.setFocusPolicy(Qt.StrongFocus)
+            self.fast_widget.setMouseTracking(True)
+            
+            # Initialize FAST Annotation Manager
+            self.fast_annotation_manager = FASTAnnotationManager(self.fast_view)
             
         except Exception as e:
             print(f"Error creating FAST view: {e}")
             self.fast_view = None
             self.fast_widget = None
+            self.fast_annotation_manager = None
     
     def apply_dark_theme(self):
         """Apply dark theme to the application."""
@@ -627,8 +641,7 @@ class UltrasoundViewerWindow(QMainWindow):
         self.toolbar.annotate_button.clicked.connect(lambda checked: self.set_tool('annotate' if checked else 'none'))
         self.toolbar.line_action.triggered.connect(lambda: self.set_annotation_tool('line'))
         self.toolbar.rect_action.triggered.connect(lambda: self.set_annotation_tool('rectangle'))
-        self.toolbar.circle_action.triggered.connect(lambda: self.set_annotation_tool('circle'))
-        self.toolbar.freeform_action.triggered.connect(lambda: self.set_annotation_tool('freeform'))
+        self.toolbar.polygon_action.triggered.connect(lambda: self.set_annotation_tool('polygon'))
         
         # Toolbar - playback
         self.toolbar.play_action.triggered.connect(self.toggle_playback)
@@ -645,7 +658,11 @@ class UltrasoundViewerWindow(QMainWindow):
         # Annotation overlay <-> Layer panel
         if self.annotation_overlay:
             self.annotation_overlay.annotation_added.connect(self.layer_panel.add_annotation)
+            self.annotation_overlay.annotation_added.connect(self.on_annotation_added)
             self.annotation_overlay.wl_changed.connect(self.on_wl_changed)
+            # Connect preview signals for FAST annotation sync
+            self.annotation_overlay.preview_updated.connect(self.on_preview_updated)
+            self.annotation_overlay.preview_cleared.connect(self.on_preview_cleared)
         self.layer_panel.annotation_deleted.connect(self.on_annotation_deleted)
         self.layer_panel.visibility_changed.connect(self.on_annotation_visibility_changed)
         
@@ -710,6 +727,7 @@ class UltrasoundViewerWindow(QMainWindow):
             # Extract DICOM metadata for patient info panel
             dicom_metadata = {}
             pixel_spacing = None
+            image_width, image_height = 0, 0
             if filepath.lower().endswith('.dcm'):
                 try:
                     import pydicom
@@ -722,6 +740,11 @@ class UltrasoundViewerWindow(QMainWindow):
                         'InstitutionName': str(ds.get('InstitutionName', '')),
                         'NumberOfFrames': str(ds.get('NumberOfFrames', 1)),
                     }
+                    
+                    # Extract image dimensions
+                    if hasattr(ds, 'Columns') and hasattr(ds, 'Rows'):
+                        image_width = int(ds.Columns)
+                        image_height = int(ds.Rows)
                     
                     # Extract PixelSpacing for real measurements
                     # Try standard PixelSpacing first
@@ -738,11 +761,25 @@ class UltrasoundViewerWindow(QMainWindow):
                     
                     if pixel_spacing:
                         print(f"Pixel spacing: {pixel_spacing:.4f} mm/pixel")
+                    if image_width and image_height:
+                        print(f"Image size: {image_width} x {image_height}")
                 except Exception as e:
                     print(f"Could not read DICOM metadata: {e}")
             
             # Set pixel spacing for annotations
             Annotation.set_pixel_spacing(pixel_spacing)
+            
+            # Update FAST annotation manager with image info
+            if self.fast_annotation_manager and image_width > 0 and image_height > 0:
+                self.fast_annotation_manager.set_image_info(
+                    image_width, image_height, 
+                    pixel_spacing if pixel_spacing else 1.0
+                )
+                # Also set widget size for coordinate conversion
+                if self.fast_widget:
+                    self.fast_annotation_manager.coord_converter.set_widget_size(
+                        self.fast_widget.width(), self.fast_widget.height()
+                    )
             
             # Update patient info panel
             self.file_panel.update_patient_info(dicom_metadata)
@@ -789,6 +826,10 @@ class UltrasoundViewerWindow(QMainWindow):
             self.fast_view.removeAllRenderers()
             self.fast_view.addRenderer(self.renderer)
             # Note: Do NOT call reinitialize() here - it resets internal size to 400x300
+            
+            # Re-add annotation renderer after removeAllRenderers
+            if self.fast_annotation_manager:
+                self.fast_annotation_manager.ensure_renderer_added()
             
             # Start computation thread
             self.computation_thread.start()
@@ -938,20 +979,45 @@ class UltrasoundViewerWindow(QMainWindow):
         tool_names = {
             'line': '─ Line',
             'rectangle': '▭ Rectangle', 
-            'circle': '○ Circle',
-            'freeform': '✎ Freeform'
+            'polygon': '⬡ Polygon'
         }
-        self.status_bar.showMessage(f"Annotation: {tool_names.get(tool_type, tool_type)} - Click and drag to draw")
+        
+        # Different help text for polygon tool
+        if tool_type == 'polygon':
+            self.status_bar.showMessage(f"Annotation: {tool_names.get(tool_type, tool_type)} - Click to add vertices, double-click to complete")
+        else:
+            self.status_bar.showMessage(f"Annotation: {tool_names.get(tool_type, tool_type)} - Click and drag to draw")
     
     def on_annotation_deleted(self, annotation):
         """Handle annotation deletion from layer panel."""
         if self.annotation_overlay:
             self.annotation_overlay.remove_annotation(annotation)
+        # Also remove from FAST annotation manager
+        if self.fast_annotation_manager:
+            self.fast_annotation_manager.remove_annotation(annotation)
     
     def on_annotation_visibility_changed(self, annotation, visible):
         """Handle annotation visibility toggle from layer panel."""
         if self.annotation_overlay:
             self.annotation_overlay.update()  # Refresh display
+        # Also update FAST annotation manager
+        if self.fast_annotation_manager:
+            self.fast_annotation_manager.set_visibility(annotation, visible)
+    
+    def on_annotation_added(self, annotation):
+        """Handle new annotation added - sync to FAST annotation manager."""
+        if self.fast_annotation_manager:
+            self.fast_annotation_manager.add_annotation(annotation)
+    
+    def on_preview_updated(self, tool_type, points):
+        """Handle annotation preview update - sync to FAST annotation manager."""
+        if self.fast_annotation_manager:
+            self.fast_annotation_manager.set_preview(tool_type, points)
+    
+    def on_preview_cleared(self):
+        """Handle annotation preview cleared - sync to FAST annotation manager."""
+        if self.fast_annotation_manager:
+            self.fast_annotation_manager.clear_preview()
     
     def on_wl_changed(self, delta_window, delta_level):
         """Handle Window/Level drag changes."""
@@ -985,6 +1051,26 @@ class UltrasoundViewerWindow(QMainWindow):
             except Exception as e:
                 self.status_bar.showMessage(f"Reset: {e}")
     
+    # （2/2）平移事件過濾器 （將右鍵點擊事件轉發給 fast_widget 以實現平移）
+    def eventFilter(self, obj, event):
+        """Filter events from annotation overlay to forward right-click to fast_widget for pan."""
+        from PySide2.QtCore import QEvent
+        from PySide2.QtWidgets import QApplication
+        
+        if obj == self.annotation_overlay and self.fast_widget:
+            # Forward right-click events for pan
+            if event.type() in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease, QEvent.MouseMove):
+                if hasattr(event, 'button') and event.button() == Qt.RightButton:
+                    # Create a new event and send to fast_widget
+                    QApplication.sendEvent(self.fast_widget, event)
+                    return True  # Event handled
+                elif hasattr(event, 'buttons') and event.buttons() == Qt.RightButton:
+                    # For MouseMove during right-drag
+                    QApplication.sendEvent(self.fast_widget, event)
+                    return True
+        
+        return super().eventFilter(obj, event)
+
     def toggle_layers_panel(self):
         """Toggle visibility of the layers panel."""
         sizes = self.main_splitter.sizes()

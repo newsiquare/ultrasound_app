@@ -1,10 +1,12 @@
 """
 Annotation system for ultrasound imaging software.
 
-This module provides annotation tools for drawing and measuring on ultrasound images:
-- Line, Rectangle, Circle, Freeform shapes
+This module provides annotation data models and UI widgets:
+- Line, Rectangle, Polygon shapes (data models)
 - Measurements (width, height, area, length)
-- Annotation overlay widget for drawing
+- Layer panel widget for annotation management
+
+Note: Actual rendering is handled by FASTAnnotationManager in fast_annotations.py
 """
 
 from PySide2.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLabel, 
@@ -12,10 +14,20 @@ from PySide2.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLabel,
 from PySide2.QtCore import Qt, QPoint, QRect, Signal
 from PySide2.QtGui import QPainter, QPen, QColor, QBrush, QFont, QPainterPath
 import math
+from typing import Tuple, List, Optional
+
+
+# Default annotation color (Cyan) as RGB tuple (0-1 range)
+DEFAULT_COLOR = (0.0, 1.0, 1.0)
 
 
 class Annotation:
-    """Base class for all annotations."""
+    """
+    Base class for all annotations.
+    
+    Stores annotation data (points, color, state) without rendering logic.
+    Rendering is handled by FASTAnnotationManager.
+    """
     
     _id_counter = 0
     _pixel_spacing = None  # mm per pixel, shared across annotations
@@ -25,14 +37,25 @@ class Annotation:
         """Set pixel spacing in mm/pixel."""
         cls._pixel_spacing = spacing
     
-    def __init__(self, color=QColor(0, 255, 255)):  # Cyan color
+    @classmethod
+    def reset_id_counter(cls):
+        """Reset ID counter (for testing)."""
+        cls._id_counter = 0
+    
+    def __init__(self, color: Tuple[float, float, float] = DEFAULT_COLOR):
+        """
+        Initialize annotation.
+        
+        Args:
+            color: RGB tuple with values 0-1, default cyan
+        """
         Annotation._id_counter += 1
         self.id = Annotation._id_counter
-        self.color = color
-        self.points = []
+        self.color = color  # RGB tuple (0-1 range)
+        self.points: List[Tuple[float, float]] = []  # List of (x, y) pixel coordinates
         self.completed = False
         self.selected = False
-        self.visible = True  # For layer panel visibility toggle
+        self.visible = True
     
     def _px_to_mm(self, pixels):
         """Convert pixels to mm if pixel_spacing available."""
@@ -55,22 +78,18 @@ class Annotation:
             return f"{cm_sq:.2f} cm²"
         return f"{pixels_sq:.0f} px²"
     
-    def add_point(self, point):
+    def add_point(self, x: float, y: float):
         """Add a point to the annotation."""
-        self.points.append(point)
+        self.points.append((x, y))
     
-    def update_last_point(self, point):
+    def update_last_point(self, x: float, y: float):
         """Update the last point (for dragging)."""
         if self.points:
-            self.points[-1] = point
+            self.points[-1] = (x, y)
     
     def complete(self):
         """Mark annotation as complete."""
         self.completed = True
-    
-    def draw(self, painter):
-        """Draw the annotation. Override in subclasses."""
-        raise NotImplementedError
     
     def get_measurements(self):
         """Return measurements dict. Override in subclasses."""
@@ -80,49 +99,36 @@ class Annotation:
         """Return annotation name for layer panel."""
         return f"Annotation {self.id}"
     
-    def get_bounding_rect(self):
-        """Return bounding rectangle."""
+    def get_bounding_rect(self) -> Tuple[float, float, float, float]:
+        """
+        Return bounding rectangle as (x, y, width, height).
+        
+        Returns:
+            Tuple of (min_x, min_y, width, height) in pixel coordinates
+        """
         if len(self.points) < 2:
-            return QRect()
-        x_coords = [p.x() for p in self.points]
-        y_coords = [p.y() for p in self.points]
-        return QRect(min(x_coords), min(y_coords), 
-                     max(x_coords) - min(x_coords),
-                     max(y_coords) - min(y_coords))
+            return (0, 0, 0, 0)
+        x_coords = [p[0] for p in self.points]
+        y_coords = [p[1] for p in self.points]
+        min_x, max_x = min(x_coords), max(x_coords)
+        min_y, max_y = min(y_coords), max(y_coords)
+        return (min_x, min_y, max_x - min_x, max_y - min_y)
 
 
 class LineAnnotation(Annotation):
-    """Line annotation with length measurement."""
+    """
+    Line annotation with length measurement.
     
-    def draw(self, painter):
-        if len(self.points) < 2:
-            return
-        
-        pen = QPen(self.color, 2 if not self.selected else 3)
-        painter.setPen(pen)
-        painter.drawLine(self.points[0], self.points[1])
-        
-        # Draw measurement label
-        if self.completed:
-            self._draw_measurement(painter)
+    Two points define the line endpoints.
+    """
     
-    def _draw_measurement(self, painter):
-        if len(self.points) < 2:
-            return
-        length_px = self._calculate_length()
-        mid = QPoint((self.points[0].x() + self.points[1].x()) // 2,
-                     (self.points[0].y() + self.points[1].y()) // 2 - 10)
-        
-        painter.setFont(QFont("Arial", 10))
-        painter.setPen(QPen(Qt.white))
-        painter.drawText(mid, f"L: {self._format_length(length_px)}")
-    
-    def _calculate_length(self):
+    def _calculate_length(self) -> float:
+        """Calculate line length in pixels."""
         if len(self.points) < 2:
             return 0
-        dx = self.points[1].x() - self.points[0].x()
-        dy = self.points[1].y() - self.points[0].y()
-        return math.sqrt(dx*dx + dy*dy)
+        dx = self.points[1][0] - self.points[0][0]
+        dy = self.points[1][1] - self.points[0][1]
+        return math.sqrt(dx * dx + dy * dy)
     
     def get_measurements(self):
         length_px = self._calculate_length()
@@ -133,122 +139,133 @@ class LineAnnotation(Annotation):
 
 
 class RectAnnotation(Annotation):
-    """Rectangle annotation with width, height, area measurements."""
+    """
+    Rectangle annotation with width, height, area measurements.
     
-    def draw(self, painter):
+    Two points define opposite corners of the rectangle.
+    """
+    
+    def get_corners(self) -> List[Tuple[float, float]]:
+        """
+        Get the 4 corners of the rectangle in order: TL, TR, BR, BL.
+        
+        Returns:
+            List of 4 (x, y) tuples representing corners
+        """
         if len(self.points) < 2:
-            return
+            return []
         
-        pen = QPen(self.color, 2 if not self.selected else 3)
-        painter.setPen(pen)
-        painter.setBrush(QBrush(QColor(0, 255, 255, 30)))  # Semi-transparent fill
+        x1, y1 = self.points[0]
+        x2, y2 = self.points[1]
         
-        rect = QRect(self.points[0], self.points[1]).normalized()
-        painter.drawRect(rect)
+        # Normalize to get min/max
+        min_x, max_x = min(x1, x2), max(x1, x2)
+        min_y, max_y = min(y1, y2), max(y1, y2)
         
-        # Draw measurement label
-        if self.completed:
-            self._draw_measurement(painter, rect)
+        return [
+            (min_x, min_y),  # Top-left
+            (max_x, min_y),  # Top-right
+            (max_x, max_y),  # Bottom-right
+            (min_x, max_y),  # Bottom-left
+        ]
     
-    def _draw_measurement(self, painter, rect):
-        w = rect.width()
-        h = rect.height()
-        area = w * h
-        
-        label_pos = QPoint(rect.left(), rect.top() - 5)
-        painter.setFont(QFont("Arial", 10))
-        painter.setPen(QPen(Qt.white))
-        painter.drawText(label_pos, f"W:{self._format_length(w)} H:{self._format_length(h)} A:{self._format_area(area)}")
+    def _get_dimensions(self) -> Tuple[float, float]:
+        """Get width and height in pixels."""
+        if len(self.points) < 2:
+            return (0, 0)
+        w = abs(self.points[1][0] - self.points[0][0])
+        h = abs(self.points[1][1] - self.points[0][1])
+        return (w, h)
     
     def get_measurements(self):
-        if len(self.points) < 2:
-            return {}
-        rect = QRect(self.points[0], self.points[1]).normalized()
-        w, h = rect.width(), rect.height()
+        w, h = self._get_dimensions()
+        area = w * h
         return {
             "Width": self._format_length(w),
             "Height": self._format_length(h),
-            "Area": self._format_area(w * h)
+            "Area": self._format_area(area)
         }
     
     def get_name(self):
         return f"Rectangle {self.id}"
 
 
-class CircleAnnotation(Annotation):
-    """Circle annotation with radius and area measurements."""
+class PolygonAnnotation(Annotation):
+    """
+    Polygon annotation with perimeter and area measurements.
     
-    def draw(self, painter):
-        if len(self.points) < 2:
-            return
-        
-        pen = QPen(self.color, 2 if not self.selected else 3)
-        painter.setPen(pen)
-        painter.setBrush(QBrush(QColor(0, 255, 255, 30)))
-        
-        center = self.points[0]
-        radius = self._calculate_radius()
-        
-        painter.drawEllipse(center, radius, radius)
-        
-        if self.completed:
-            self._draw_measurement(painter, center, radius)
+    Multiple points define the polygon vertices.
+    Click to add vertices, double-click or press Enter to complete.
+    """
     
-    def _calculate_radius(self):
+    def __init__(self, color: Tuple[float, float, float] = DEFAULT_COLOR, 
+                 closed: bool = True):
+        """
+        Initialize polygon annotation.
+        
+        Args:
+            color: RGB tuple with values 0-1
+            closed: Whether the polygon should be closed (connect last to first)
+        """
+        super().__init__(color)
+        self.closed = closed
+    
+    def _calculate_perimeter(self) -> float:
+        """Calculate polygon perimeter in pixels."""
         if len(self.points) < 2:
             return 0
-        dx = self.points[1].x() - self.points[0].x()
-        dy = self.points[1].y() - self.points[0].y()
-        return int(math.sqrt(dx*dx + dy*dy))
-    
-    def _draw_measurement(self, painter, center, radius):
-        area = math.pi * radius * radius
-        label_pos = QPoint(center.x(), center.y() - radius - 10)
         
-        painter.setFont(QFont("Arial", 10))
-        painter.setPen(QPen(Qt.white))
-        painter.drawText(label_pos, f"R:{self._format_length(radius)} A:{self._format_area(area)}")
+        perimeter = 0
+        for i in range(len(self.points) - 1):
+            dx = self.points[i + 1][0] - self.points[i][0]
+            dy = self.points[i + 1][1] - self.points[i][1]
+            perimeter += math.sqrt(dx * dx + dy * dy)
+        
+        # Add closing edge if closed
+        if self.closed and len(self.points) >= 3:
+            dx = self.points[0][0] - self.points[-1][0]
+            dy = self.points[0][1] - self.points[-1][1]
+            perimeter += math.sqrt(dx * dx + dy * dy)
+        
+        return perimeter
+    
+    def _calculate_area(self) -> float:
+        """
+        Calculate polygon area using shoelace formula.
+        
+        Returns:
+            Area in square pixels (absolute value)
+        """
+        if len(self.points) < 3:
+            return 0
+        
+        # Shoelace formula
+        n = len(self.points)
+        area = 0
+        for i in range(n):
+            j = (i + 1) % n
+            area += self.points[i][0] * self.points[j][1]
+            area -= self.points[j][0] * self.points[i][1]
+        
+        return abs(area) / 2
     
     def get_measurements(self):
-        radius = self._calculate_radius()
-        area = math.pi * radius * radius
-        return {
-            "Radius": self._format_length(radius),
-            "Area": self._format_area(area)
-        }
+        perimeter = self._calculate_perimeter()
+        measurements = {"Perimeter": self._format_length(perimeter)}
+        
+        if self.closed and len(self.points) >= 3:
+            area = self._calculate_area()
+            measurements["Area"] = self._format_area(area)
+        
+        return measurements
     
     def get_name(self):
-        return f"Circle {self.id}"
+        return f"Polygon {self.id}"
 
 
-class FreeformAnnotation(Annotation):
-    """Freeform drawing annotation."""
-    
-    def draw(self, painter):
-        if len(self.points) < 2:
-            return
-        
-        pen = QPen(self.color, 2 if not self.selected else 3)
-        painter.setPen(pen)
-        
-        path = QPainterPath()
-        path.moveTo(self.points[0])
-        for point in self.points[1:]:
-            path.lineTo(point)
-        
-        painter.drawPath(path)
-    
-    def get_measurements(self):
-        # Calculate approximate length
-        length = 0
-        for i in range(1, len(self.points)):
-            dx = self.points[i].x() - self.points[i-1].x()
-            dy = self.points[i].y() - self.points[i-1].y()
-            length += math.sqrt(dx*dx + dy*dy)
-        return {"Length": f"{length:.1f}px"}
-    
-    def get_name(self):
-        return f"Freeform {self.id}"
+# Legacy alias for backward compatibility during transition
+FreeformAnnotation = PolygonAnnotation
+CircleAnnotation = PolygonAnnotation  # Temporarily alias, will be removed
 
 
 class AnnotationOverlay(QWidget):
@@ -256,6 +273,8 @@ class AnnotationOverlay(QWidget):
     
     annotation_added = Signal(object)  # Emitted when annotation is completed
     wl_changed = Signal(float, float)  # Emitted when W/L changes (delta_window, delta_level)
+    preview_updated = Signal(str, list)  # Emitted when preview changes (tool_type, points)
+    preview_cleared = Signal()  # Emitted when preview is cleared
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -270,24 +289,85 @@ class AnnotationOverlay(QWidget):
         
         # W/L drag state
         self._wl_start_pos = None
+        
+        # Polygon drawing state
+        self._polygon_points = []
+        
+        # Current mouse position for preview line
+        self._current_mouse_pos = None
     
     def set_tool(self, tool_type):
         """Set the current annotation tool."""
         self.current_tool = tool_type
+        # Reset polygon points when tool changes
+        self._polygon_points = []
+        self._current_mouse_pos = None
+        self.preview_cleared.emit()
     
     def paintEvent(self, event):
-        """Draw all annotations."""
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+        """
+        Paint event - all annotation rendering is now handled by FAST LineRenderer.
         
-        # Draw completed annotations (only if visible)
-        for annotation in self.annotations:
-            if annotation.visible:
-                annotation.draw(painter)
+        FAST handles:
+        - Completed annotations (via annotation_added signal)
+        - Preview during drawing (via preview_updated signal)
         
-        # Draw current annotation being drawn
-        if self.current_annotation:
-            self.current_annotation.draw(painter)
+        Qt Overlay is now only used for:
+        - Mouse event handling
+        - Coordinate collection
+        """
+        # All rendering is now done by FAST LineRenderer
+        # This ensures annotations follow zoom/pan automatically
+        pass
+    
+    def _draw_annotation(self, painter, annotation):
+        """Draw a single annotation using Qt."""
+        # Convert color tuple to QColor
+        r, g, b = annotation.color
+        qcolor = QColor(int(r * 255), int(g * 255), int(b * 255))
+        pen = QPen(qcolor, 2 if not annotation.selected else 3)
+        painter.setPen(pen)
+        
+        ann_type = type(annotation).__name__
+        
+        if ann_type == 'LineAnnotation' and len(annotation.points) >= 2:
+            p1 = QPoint(int(annotation.points[0][0]), int(annotation.points[0][1]))
+            p2 = QPoint(int(annotation.points[1][0]), int(annotation.points[1][1]))
+            painter.drawLine(p1, p2)
+            
+        elif ann_type == 'RectAnnotation' and len(annotation.points) >= 2:
+            corners = annotation.get_corners()
+            if len(corners) >= 4:
+                painter.setBrush(QBrush(QColor(0, 255, 255, 30)))
+                p1 = QPoint(int(corners[0][0]), int(corners[0][1]))
+                p3 = QPoint(int(corners[2][0]), int(corners[2][1]))
+                rect = QRect(p1, p3).normalized()
+                painter.drawRect(rect)
+                painter.setBrush(Qt.NoBrush)
+                
+        elif ann_type == 'PolygonAnnotation' and len(annotation.points) >= 2:
+            path = QPainterPath()
+            path.moveTo(annotation.points[0][0], annotation.points[0][1])
+            for pt in annotation.points[1:]:
+                path.lineTo(pt[0], pt[1])
+            if annotation.closed and len(annotation.points) >= 3:
+                path.closeSubpath()
+            painter.drawPath(path)
+    
+    def _draw_polygon_preview(self, painter):
+        """Draw polygon preview while user is adding points."""
+        pen = QPen(QColor(0, 255, 255), 2, Qt.DashLine)
+        painter.setPen(pen)
+        
+        if len(self._polygon_points) >= 1:
+            path = QPainterPath()
+            path.moveTo(self._polygon_points[0][0], self._polygon_points[0][1])
+            for pt in self._polygon_points[1:]:
+                path.lineTo(pt[0], pt[1])
+            # Draw line to current mouse position
+            if self._current_mouse_pos:
+                path.lineTo(self._current_mouse_pos[0], self._current_mouse_pos[1])
+            painter.drawPath(path)
     
     def mousePressEvent(self, event):
         """Start drawing annotation or W/L adjustment."""
@@ -302,30 +382,57 @@ class AnnotationOverlay(QWidget):
         if not self.current_tool:
             return
         
-        self.is_drawing = True
         pos = event.pos()
+        x, y = pos.x(), pos.y()
+        
+        # Handle polygon tool - click to add points
+        if self.current_tool == 'polygon':
+            self._polygon_points.append((x, y))
+            # Emit preview update for FAST rendering
+            self.preview_updated.emit('polygon', list(self._polygon_points))
+            self.update()
+            return
+        
+        self.is_drawing = True
         
         # Create new annotation based on tool type
         if self.current_tool == 'line':
             self.current_annotation = LineAnnotation()
         elif self.current_tool == 'rectangle':
             self.current_annotation = RectAnnotation()
-        elif self.current_tool == 'circle':
-            self.current_annotation = CircleAnnotation()
-        elif self.current_tool == 'freeform':
-            self.current_annotation = FreeformAnnotation()
         
         if self.current_annotation:
-            self.current_annotation.add_point(pos)
-            self.current_annotation.add_point(pos)  # Add second point for dragging
+            self.current_annotation.add_point(x, y)
+            self.current_annotation.add_point(x, y)  # Add second point for dragging
+            # Emit preview update for FAST rendering
+            self.preview_updated.emit(self.current_tool, list(self.current_annotation.points))
         
         self.update()
     
+    def mouseDoubleClickEvent(self, event):
+        """Complete polygon on double-click."""
+        if self.current_tool == 'polygon' and len(self._polygon_points) >= 3:
+            # Create and complete polygon
+            annotation = PolygonAnnotation(closed=True)
+            for pt in self._polygon_points:
+                annotation.add_point(pt[0], pt[1])
+            annotation.complete()
+            
+            self.annotations.append(annotation)
+            self.annotation_added.emit(annotation)
+            self._polygon_points = []
+            self._current_mouse_pos = None
+            # Clear preview in FAST
+            self.preview_cleared.emit()
+            self.update()
+    
     def mouseMoveEvent(self, event):
         """Update annotation while dragging or adjust W/L."""
+        pos = event.pos()
+        x, y = pos.x(), pos.y()
+        
         # Handle W/L mode
         if self.current_tool == 'wl' and self._wl_start_pos is not None:
-            pos = event.pos()
             # Horizontal = window (contrast), Vertical = level (brightness)
             delta_window = (pos.x() - self._wl_start_pos.x()) * 1.0
             delta_level = -(pos.y() - self._wl_start_pos.y()) * 1.0  # Invert Y
@@ -333,17 +440,24 @@ class AnnotationOverlay(QWidget):
             self.wl_changed.emit(delta_window, delta_level)
             return
         
+        # Track current mouse position for preview
+        self._current_mouse_pos = (x, y)
+        
+        # Handle polygon preview - update preview with mouse position
+        if self.current_tool == 'polygon' and len(self._polygon_points) >= 1:
+            # Emit preview with current points + mouse position
+            preview_points = list(self._polygon_points) + [(x, y)]
+            self.preview_updated.emit('polygon', preview_points)
+            self.update()
+            return
+        
         if not self.is_drawing or not self.current_annotation:
             return
         
-        pos = event.pos()
-        
-        if self.current_tool == 'freeform':
-            # For freeform, add points continuously
-            self.current_annotation.add_point(pos)
-        else:
-            # For other shapes, update the last point
-            self.current_annotation.update_last_point(pos)
+        # Update the last point
+        self.current_annotation.update_last_point(x, y)
+        # Emit preview update for FAST rendering
+        self.preview_updated.emit(self.current_tool, list(self.current_annotation.points))
         
         self.update()
     
@@ -357,6 +471,10 @@ class AnnotationOverlay(QWidget):
             self._wl_start_pos = None
             return
         
+        # Polygon is completed on double-click, not release
+        if self.current_tool == 'polygon':
+            return
+        
         if not self.is_drawing:
             return
         
@@ -367,6 +485,8 @@ class AnnotationOverlay(QWidget):
             self.annotations.append(self.current_annotation)
             self.annotation_added.emit(self.current_annotation)
             self.current_annotation = None
+            # Clear preview in FAST
+            self.preview_cleared.emit()
         
         self.update()
     
@@ -420,12 +540,11 @@ class LayerItemWidget(QWidget):
         icons = {
             'Line': '\ue11f',        # minus
             'Rectangle': '\ue379',   # rectangle-horizontal
-            'Circle': '\ue07a',      # circle
-            'Freeform': '\ue1f8'     # pencil
+            'Polygon': '\ue27d',     # pentagon (or hexagon)
         }
         name = annotation.get_name()
         shape_type = name.split()[0] if name else 'Shape'
-        icon = icons.get(shape_type, '\ue07a')
+        icon = icons.get(shape_type, '\ue27d')  # default to polygon icon
         
         icon_label = QLabel(icon)
         icon_label.setFont(QFont("lucide", 14))
