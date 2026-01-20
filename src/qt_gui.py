@@ -341,6 +341,74 @@ class ToolbarWidget(QToolBar):
         self.annotate_button.setMenu(self.annotate_menu)
         self.addWidget(self.annotate_button)
         
+        # ===== Measure tool with dropdown menu =====
+        self.measure_button = QToolButton(self)
+        self.measure_button.setText(" Measure")  # Lucide ruler icon U+E14E
+        self.measure_button.setFont(QFont("lucide", 11))
+        self.measure_button.setToolTip("Measurement tools")
+        self.measure_button.setPopupMode(QToolButton.MenuButtonPopup)
+        self.measure_button.setCheckable(True)
+        self.measure_button.setStyleSheet("""
+            QToolButton {
+                padding-right: 20px;
+            }
+            QToolButton::menu-button {
+                width: 20px;
+            }
+        """)
+        
+        # Create measure menu
+        self.measure_menu = QMenu(self)
+        self.measure_menu.setStyleSheet("""
+            QMenu {
+                background-color: #2d2d30;
+                color: #ffffff;
+                border: 1px solid #3e3e42;
+                border-radius: 4px;
+                padding: 2px;
+            }
+            QMenu::item {
+                padding: 6px 10px;
+                margin: 0px;
+                border-radius: 3px;
+            }
+            QMenu::item:selected {
+                background-color: #0078d4;
+            }
+            QMenu::indicator {
+                width: 0px;
+                height: 0px;
+            }
+            QMenu::separator {
+                height: 1px;
+                background-color: #606060;
+                margin: 4px 8px;
+            }
+        """)
+        
+        # Add measurement tools
+        self.distance_action = self.measure_menu.addAction("📏 Distance")
+        self.angle_action = self.measure_menu.addAction("📐 Angle")
+        self.area_action = self.measure_menu.addAction("⬡ Area")
+        self.perimeter_action = self.measure_menu.addAction("⌢ Perimeter")
+        self.ellipse_action = self.measure_menu.addAction("⬭ Ellipse")
+        
+        # Add separator and clear action
+        self.measure_menu.addSeparator()
+        self.clear_measures_action = self.measure_menu.addAction("🧹 Clear All")
+        
+        # Group for exclusive selection (tools only, not clear action)
+        self.measure_group = QActionGroup(self)
+        self.measure_group.addAction(self.distance_action)
+        self.measure_group.addAction(self.angle_action)
+        self.measure_group.addAction(self.area_action)
+        self.measure_group.addAction(self.perimeter_action)
+        self.measure_group.addAction(self.ellipse_action)
+        self.measure_group.setExclusive(True)
+        
+        self.measure_button.setMenu(self.measure_menu)
+        self.addWidget(self.measure_button)
+        
         self.addSeparator()
         
         # Screenshot
@@ -717,7 +785,9 @@ class UltrasoundViewerWindow(QMainWindow):
         self.rotation_angle = 0
         self.current_tool = 'none'
         self.current_annotation_tool = None
+        self.current_measure_tool = None  # Current measurement tool type
         self.annotations = []  # List of all annotations
+        self.measurements = []  # List of all measurements
         
         # FAST Annotation Manager (will be initialized after fast_view is created)
         self.fast_annotation_manager = None
@@ -789,6 +859,12 @@ class UltrasoundViewerWindow(QMainWindow):
             # This ensures proper event propagation to the OpenGL widget
             self.annotation_overlay = AnnotationOverlay(self.fast_widget)
             self.annotation_overlay.setGeometry(0, 0, self.fast_widget.width(), self.fast_widget.height())
+            
+            # Connect coord_converter to annotation_overlay for text rendering
+            if self.fast_annotation_manager:
+                self.annotation_overlay.set_coord_converter(
+                    self.fast_annotation_manager.coord_converter
+                )
             
             # （1/2）安裝平移事件過濾器 (forward events to FAST view)
             self.annotation_overlay.installEventFilter(self)
@@ -914,6 +990,15 @@ class UltrasoundViewerWindow(QMainWindow):
         self.toolbar.rect_action.triggered.connect(lambda: self.set_annotation_tool('rectangle'))
         self.toolbar.polygon_action.triggered.connect(lambda: self.set_annotation_tool('polygon'))
         
+        # Measure tools
+        self.toolbar.measure_button.clicked.connect(lambda checked: self.set_tool('measure' if checked else 'none'))
+        self.toolbar.distance_action.triggered.connect(lambda: self.set_measure_tool('distance'))
+        self.toolbar.angle_action.triggered.connect(lambda: self.set_measure_tool('angle'))
+        self.toolbar.area_action.triggered.connect(lambda: self.set_measure_tool('area'))
+        self.toolbar.perimeter_action.triggered.connect(lambda: self.set_measure_tool('perimeter'))
+        self.toolbar.ellipse_action.triggered.connect(lambda: self.set_measure_tool('ellipse'))
+        self.toolbar.clear_measures_action.triggered.connect(self.clear_all_measures)
+        
         # Toolbar - other actions
         self.toolbar.screenshot_action.clicked.connect(self.take_screenshot)
         
@@ -932,6 +1017,7 @@ class UltrasoundViewerWindow(QMainWindow):
         if self.annotation_overlay:
             self.annotation_overlay.annotation_added.connect(self.layer_panel.add_annotation)
             self.annotation_overlay.annotation_added.connect(self.on_annotation_added)
+            self.annotation_overlay.measure_added.connect(self.on_measure_added)
             self.annotation_overlay.wl_changed.connect(self.on_wl_changed)
             # Connect preview signals for FAST annotation sync
             self.annotation_overlay.preview_updated.connect(self.on_preview_updated)
@@ -999,7 +1085,7 @@ class UltrasoundViewerWindow(QMainWindow):
         try:
             # Import pipeline function
             from .pipelines import create_playback_pipeline
-            from .annotations import Annotation
+            from .annotations import Annotation, Measure
             
             # Extract DICOM metadata for patient info panel
             dicom_metadata = {}
@@ -1043,8 +1129,9 @@ class UltrasoundViewerWindow(QMainWindow):
                 except Exception as e:
                     print(f"Could not read DICOM metadata: {e}")
             
-            # Set pixel spacing for annotations
+            # Set pixel spacing for annotations and measurements
             Annotation.set_pixel_spacing(pixel_spacing)
+            Measure.set_pixel_spacing(pixel_spacing)
             
             # Update FAST annotation manager with image info
             if self.fast_annotation_manager and image_width > 0 and image_height > 0:
@@ -1249,6 +1336,7 @@ class UltrasoundViewerWindow(QMainWindow):
         self.current_tool = 'annotate'
         self.current_annotation_tool = tool_type
         self.toolbar.annotate_button.setChecked(True)
+        self.toolbar.measure_button.setChecked(False)  # Uncheck measure button
         
         # Enable annotation overlay for drawing
         if self.annotation_overlay:
@@ -1266,6 +1354,69 @@ class UltrasoundViewerWindow(QMainWindow):
             self.status_bar.showMessage(f"Annotation: {tool_names.get(tool_type, tool_type)} - Click to add vertices, double-click to complete")
         else:
             self.status_bar.showMessage(f"Annotation: {tool_names.get(tool_type, tool_type)} - Click and drag to draw")
+    
+    def set_measure_tool(self, tool_type):
+        """Set the current measurement tool type."""
+        self.current_tool = 'measure'
+        self.current_measure_tool = tool_type
+        self.toolbar.measure_button.setChecked(True)
+        self.toolbar.annotate_button.setChecked(False)  # Uncheck annotate button
+        
+        # Enable annotation overlay for drawing measurements
+        if self.annotation_overlay:
+            self.annotation_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+            self.annotation_overlay.set_tool(tool_type)
+        
+        tool_names = {
+            'distance': '📏 Distance',
+            'angle': '📐 Angle',
+            'area': '⬡ Area',
+            'perimeter': '⌢ Perimeter',
+            'ellipse': '⬭ Ellipse'
+        }
+        
+        # Different help text for different tools
+        if tool_type == 'angle':
+            self.status_bar.showMessage(f"Measure: {tool_names.get(tool_type, tool_type)} - Click 3 points (start, vertex, end)")
+        elif tool_type in ('area', 'perimeter'):
+            self.status_bar.showMessage(f"Measure: {tool_names.get(tool_type, tool_type)} - Click to add points, double-click to complete")
+        elif tool_type == 'ellipse':
+            self.status_bar.showMessage(f"Measure: {tool_names.get(tool_type, tool_type)} - Click center, drag to define axes")
+        else:
+            self.status_bar.showMessage(f"Measure: {tool_names.get(tool_type, tool_type)} - Click and drag to measure")
+    
+    def on_measure_added(self, measure):
+        """Handle new measurement from overlay."""
+        # Add to FAST annotation manager for rendering (shapes)
+        if self.fast_annotation_manager:
+            self.fast_annotation_manager.add_measure(measure)
+        
+        # Add to overlay's measurement list for text label rendering
+        if self.annotation_overlay:
+            if measure not in self.annotation_overlay.measurements:
+                self.annotation_overlay.measurements.append(measure)
+            # Trigger repaint to draw text labels
+            self.annotation_overlay.update()
+        
+        # Show measurement result in status bar
+        measurements = measure.get_measurements()
+        result_str = " | ".join([f"{k}: {v}" for k, v in measurements.items()])
+        self.status_bar.showMessage(f"Measurement: {result_str}", 5000)
+    
+    def clear_all_measures(self):
+        """Clear all measurements from the view."""
+        # Clear from FAST annotation manager
+        if self.fast_annotation_manager:
+            self.fast_annotation_manager.measurements.clear()
+            self.fast_annotation_manager._needs_update = True
+            self.fast_annotation_manager.update_renderers()
+        
+        # Clear from annotation overlay
+        if self.annotation_overlay:
+            self.annotation_overlay.measurements.clear()
+            self.annotation_overlay.update()
+        
+        self.status_bar.showMessage("All measurements cleared", 3000)
     
     def on_annotation_deleted(self, annotation):
         """Handle annotation deletion from layer panel."""

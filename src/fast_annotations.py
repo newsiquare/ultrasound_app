@@ -23,6 +23,16 @@ CLASS_COLORS = {
 }
 
 
+# Measurement type colors (matching annotations.py MEASURE_COLORS)
+MEASURE_COLORS = {
+    'Distance': (0.0, 1.0, 0.5),      # Green-Cyan
+    'Angle': (1.0, 0.65, 0.0),        # Orange
+    'Area': (0.6, 0.4, 1.0),          # Purple
+    'Perimeter': (1.0, 0.8, 0.2),     # Gold
+    'Ellipse': (1.0, 0.5, 0.8),       # Pink
+}
+
+
 def to_fast_color(color_tuple: Tuple[float, float, float]) -> fast.Color:
     """Convert RGB tuple (0-1 range) to FAST Color."""
     return fast.Color(color_tuple[0], color_tuple[1], color_tuple[2])
@@ -200,6 +210,7 @@ class FASTAnnotationManager:
         """
         self.view = fast_view
         self.annotations: List[Any] = []  # List of Annotation objects
+        self.measurements: List[Any] = []  # List of Measure objects
         self.coord_converter = CoordinateConverter()
         
         # Track current drawing state
@@ -211,6 +222,13 @@ class FASTAnnotationManager:
         self._line_meshes: Dict[str, fast.Mesh] = {}  # class_type -> Mesh
         self._vertex_renderer: Optional[fast.VertexRenderer] = None
         self._text_renderers: Dict[int, fast.TextRenderer] = {}
+        
+        # Measure renderers - one per measure_type
+        self._measure_renderers: Dict[str, fast.LineRenderer] = {}  # measure_type -> LineRenderer
+        self._measure_meshes: Dict[str, fast.Mesh] = {}  # measure_type -> Mesh
+        
+        # Text renderers for measure labels - one per measure id
+        self._measure_text_renderers: Dict[int, fast.TextRenderer] = {}  # measure_id -> TextRenderer
         
         # Preview renderer (always cyan)
         self._preview_renderer: Optional[fast.LineRenderer] = None
@@ -292,9 +310,35 @@ class FASTAnnotationManager:
             self._needs_update = True
             self.update_renderers()
     
+    def add_measure(self, measure):
+        """
+        Add a measurement and trigger renderer update.
+        
+        Args:
+            measure: Measure object (DistanceMeasure, AngleMeasure, etc.)
+        """
+        print(f"[FASTAnnotationManager] Adding measure: {type(measure).__name__}")
+        self.measurements.append(measure)
+        self._needs_update = True
+        self.update_renderers()
+        print(f"[FASTAnnotationManager] Total measurements: {len(self.measurements)}")
+    
+    def remove_measure(self, measure):
+        """
+        Remove a measurement and trigger renderer update.
+        
+        Args:
+            measure: Measure to remove
+        """
+        if measure in self.measurements:
+            self.measurements.remove(measure)
+            self._needs_update = True
+            self.update_renderers()
+    
     def clear_all(self):
-        """Remove all annotations."""
+        """Remove all annotations and measurements."""
         self.annotations.clear()
+        self.measurements.clear()
         self._text_renderers.clear()
         self._needs_update = True
         self.update_renderers()
@@ -421,8 +465,114 @@ class FASTAnnotationManager:
                 self._preview_renderer.addInputData(self._preview_mesh)
                 self.view.addRenderer(self._preview_renderer)
         
-        self._renderers_added = len(self._line_renderers) > 0 or self._preview_renderer is not None
+        # ===== MEASUREMENTS =====
+        # Remove old measure renderers
+        for measure_type, renderer in list(self._measure_renderers.items()):
+            try:
+                self.view.removeRenderer(renderer)
+            except Exception:
+                pass
+        self._measure_renderers.clear()
+        self._measure_meshes.clear()
+        
+        # Remove old measure text renderers
+        for measure_id, text_renderer in list(self._measure_text_renderers.items()):
+            try:
+                self.view.removeRenderer(text_renderer)
+            except Exception:
+                pass
+        self._measure_text_renderers.clear()
+        
+        # Group measurements by measure_type
+        measures_by_type: Dict[str, List[Any]] = {}
+        for measure in self.measurements:
+            if not measure.visible:
+                continue
+            measure_type = measure.measure_type
+            if measure_type not in measures_by_type:
+                measures_by_type[measure_type] = []
+            measures_by_type[measure_type].append(measure)
+        
+        # Create mesh and renderer for each measure_type
+        for measure_type, measures in measures_by_type.items():
+            vertices = []
+            lines = []
+            vertex_offset = 0
+            
+            for measure in measures:
+                m_vertices, m_lines = self._measure_to_mesh_data(measure, vertex_offset)
+                vertices.extend(m_vertices)
+                lines.extend(m_lines)
+                vertex_offset += len(m_vertices)
+            
+            if vertices and lines:
+                # Create mesh
+                mesh = fast.Mesh.create(vertices, lines, [])
+                self._measure_meshes[measure_type] = mesh
+                
+                # Create renderer with measure color
+                color = MEASURE_COLORS.get(measure_type, (0.0, 1.0, 0.5))
+                renderer = fast.LineRenderer.create(
+                    fast.Color(color[0], color[1], color[2]), 0.5, True
+                )
+                renderer.addInputData(mesh)
+                self.view.addRenderer(renderer)
+                self._measure_renderers[measure_type] = renderer
+                
+                print(f"[FASTAnnotationManager] Created measure renderer for {measure_type}: {len(vertices)} vertices, {len(lines)} lines")
+        
+        # NOTE: FAST TextRenderer doesn't support arbitrary world positions,
+        # so measurement text labels are rendered by Qt AnnotationOverlay instead.
+        
+        self._renderers_added = len(self._line_renderers) > 0 or len(self._measure_renderers) > 0 or self._preview_renderer is not None
         self._needs_update = False
+    
+    def _measure_to_mesh_data(self, measure, vertex_offset: int
+                               ) -> Tuple[List[fast.MeshVertex], List[fast.MeshLine]]:
+        """
+        Convert a measurement to FAST mesh data.
+        
+        Args:
+            measure: The Measure object to convert
+            vertex_offset: Starting index for vertices
+            
+        Returns:
+            (vertices, lines) tuple
+        """
+        vertices = []
+        lines = []
+        color = to_fast_color(measure.color)
+        
+        # Use get_render_data from the measure object
+        render_data = measure.get_render_data()
+        
+        # Convert pixel coordinates to world coordinates
+        for vertex in render_data.get('vertices', []):
+            # MeshVertex from annotations.py contains (x, y, z) tuple or FAST MeshVertex
+            if hasattr(vertex, 'getPosition'):
+                # It's a FAST MeshVertex
+                pos = vertex.getPosition()
+                px, py = pos[0], pos[1]
+            else:
+                # It's a tuple (x, y, z)
+                px, py = vertex[0], vertex[1]
+            
+            w = self.coord_converter.pixel_to_world(px, py)
+            vertices.append(fast.MeshVertex([w[0], w[1], w[2]]))
+        
+        # Convert line indices and add color
+        for line in render_data.get('lines', []):
+            if hasattr(line, 'getEndpoint1'):
+                # It's a FAST MeshLine
+                idx1 = line.getEndpoint1()
+                idx2 = line.getEndpoint2()
+            else:
+                # It's a tuple (idx1, idx2)
+                idx1, idx2 = line[0], line[1]
+            
+            lines.append(fast.MeshLine(vertex_offset + idx1, vertex_offset + idx2, color))
+        
+        return vertices, lines
     
     def _annotation_to_mesh_data(self, annotation, vertex_offset: int
                                   ) -> Tuple[List[fast.MeshVertex], List[fast.MeshLine]]:
@@ -536,6 +686,97 @@ class FASTAnnotationManager:
             
             for i in range(len(self.preview_points) - 1):
                 lines.append(fast.MeshLine(vertex_offset + i, vertex_offset + i + 1, color))
+        
+        # ===== MEASUREMENT TOOL PREVIEWS =====
+        # Distance preview (same as line)
+        elif self.preview_tool == 'distance' and len(self.preview_points) >= 2:
+            measure_color = to_fast_color(MEASURE_COLORS['Distance'])
+            p1, p2 = self.preview_points[0], self.preview_points[1]
+            w1 = self.coord_converter.pixel_to_world(p1[0], p1[1])
+            w2 = self.coord_converter.pixel_to_world(p2[0], p2[1])
+            
+            vertices.append(fast.MeshVertex([w1[0], w1[1], w1[2]]))
+            vertices.append(fast.MeshVertex([w2[0], w2[1], w2[2]]))
+            lines.append(fast.MeshLine(vertex_offset, vertex_offset + 1, measure_color))
+        
+        # Angle preview (two lines meeting at vertex)
+        elif self.preview_tool == 'angle' and len(self.preview_points) >= 2:
+            measure_color = to_fast_color(MEASURE_COLORS['Angle'])
+            for pt in self.preview_points:
+                w = self.coord_converter.pixel_to_world(pt[0], pt[1])
+                vertices.append(fast.MeshVertex([w[0], w[1], w[2]]))
+            
+            # Line from point 0 to point 1
+            lines.append(fast.MeshLine(vertex_offset, vertex_offset + 1, measure_color))
+            # Line from point 1 to point 2 (if exists)
+            if len(self.preview_points) >= 3:
+                lines.append(fast.MeshLine(vertex_offset + 1, vertex_offset + 2, measure_color))
+        
+        # Area preview (closed polygon)
+        elif self.preview_tool == 'area' and len(self.preview_points) >= 2:
+            measure_color = to_fast_color(MEASURE_COLORS['Area'])
+            for pt in self.preview_points:
+                w = self.coord_converter.pixel_to_world(pt[0], pt[1])
+                vertices.append(fast.MeshVertex([w[0], w[1], w[2]]))
+            
+            for i in range(len(self.preview_points) - 1):
+                lines.append(fast.MeshLine(vertex_offset + i, vertex_offset + i + 1, measure_color))
+        
+        # Perimeter preview (open polyline)
+        elif self.preview_tool == 'perimeter' and len(self.preview_points) >= 2:
+            measure_color = to_fast_color(MEASURE_COLORS['Perimeter'])
+            for pt in self.preview_points:
+                w = self.coord_converter.pixel_to_world(pt[0], pt[1])
+                vertices.append(fast.MeshVertex([w[0], w[1], w[2]]))
+            
+            for i in range(len(self.preview_points) - 1):
+                lines.append(fast.MeshLine(vertex_offset + i, vertex_offset + i + 1, measure_color))
+        
+        # Ellipse preview
+        elif self.preview_tool == 'ellipse' and len(self.preview_points) >= 2:
+            measure_color = to_fast_color(MEASURE_COLORS['Ellipse'])
+            cx, cy = self.preview_points[0]
+            px, py = self.preview_points[1]
+            
+            a = abs(px - cx)  # Semi-major axis
+            b = abs(py - cy)  # Semi-minor axis
+            
+            # Generate ellipse points
+            num_segments = 32
+            import math
+            ellipse_pts = []
+            for i in range(num_segments):
+                theta = 2 * math.pi * i / num_segments
+                x = cx + a * math.cos(theta)
+                y = cy + b * math.sin(theta)
+                ellipse_pts.append((x, y))
+            
+            for pt in ellipse_pts:
+                w = self.coord_converter.pixel_to_world(pt[0], pt[1])
+                vertices.append(fast.MeshVertex([w[0], w[1], w[2]]))
+            
+            for i in range(num_segments):
+                lines.append(fast.MeshLine(
+                    vertex_offset + i, 
+                    vertex_offset + (i + 1) % num_segments, 
+                    measure_color
+                ))
+            
+            # Add axes
+            base_idx = vertex_offset + num_segments
+            w_center = self.coord_converter.pixel_to_world(cx, cy)
+            w_h = self.coord_converter.pixel_to_world(cx + a, cy)
+            w_v = self.coord_converter.pixel_to_world(cx, cy + b)
+            w_h_neg = self.coord_converter.pixel_to_world(cx - a, cy)
+            w_v_neg = self.coord_converter.pixel_to_world(cx, cy - b)
+            
+            vertices.append(fast.MeshVertex([w_h_neg[0], w_h_neg[1], 0]))
+            vertices.append(fast.MeshVertex([w_h[0], w_h[1], 0]))
+            vertices.append(fast.MeshVertex([w_v_neg[0], w_v_neg[1], 0]))
+            vertices.append(fast.MeshVertex([w_v[0], w_v[1], 0]))
+            
+            lines.append(fast.MeshLine(base_idx, base_idx + 1, measure_color))  # Horizontal axis
+            lines.append(fast.MeshLine(base_idx + 2, base_idx + 3, measure_color))  # Vertical axis
         
         return vertices, lines
     
