@@ -10,9 +10,13 @@ Usage:
     python main.py --qt                                 # Qt GUI without file
 """
 
-import fast
-import sys
 import os
+import sys
+
+# Suppress Qt font warning messages (must be set before any Qt import)
+os.environ['QT_LOGGING_RULES'] = 'qt.qpa.fonts.warning=false'
+
+import fast
 import argparse
 
 

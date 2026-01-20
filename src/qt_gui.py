@@ -15,6 +15,9 @@ import platform
 import os
 import sys
 
+# Suppress Qt font warning messages
+os.environ['QT_LOGGING_RULES'] = 'qt.qpa.fonts.warning=false'
+
 # Must import PySide2.QtSvg before FAST on non-Windows platforms
 if platform.system() != 'Windows':
     import PySide2.QtSvg
@@ -25,11 +28,13 @@ from PySide2.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QSplitter, QListWidget, QListWidgetItem, QToolBar, QToolButton,
     QStatusBar, QSlider, QLabel, QPushButton, QFileDialog, QMessageBox,
-    QFrame, QSizePolicy, QAction, QActionGroup, QStyle, QMenu
+    QFrame, QSizePolicy, QAction, QActionGroup, QStyle, QMenu,
+    QDialog, QScrollArea
 )
 from PySide2.QtOpenGL import QGLWidget
 from PySide2.QtCore import Qt, Slot, QSize, QTimer
-from PySide2.QtGui import QIcon, QFont, QPalette, QColor
+from PySide2.QtGui import QIcon, QFont, QPalette, QColor, QKeySequence
+from PySide2.QtWidgets import QShortcut
 from shiboken2 import wrapInstance
 
 from .annotations import AnnotationOverlay, LayerPanelWidget
@@ -54,8 +59,8 @@ class FileListWidget(QWidget):
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(5)
         
-        header = QLabel("📁 Files")
-        header.setFont(QFont("Arial", 12, QFont.Bold))
+        header = QLabel(" Files")
+        header.setFont(QFont("lucide", 12, QFont.Bold))
         header.setStyleSheet("color: #ffffff; padding: 5px;")
         header_layout.addWidget(header)
         
@@ -78,14 +83,14 @@ class FileListWidget(QWidget):
         """
         
         # Open File button (icon only)
-        self.open_file_btn = QPushButton("\ue24d")  # file-plus
+        self.open_file_btn = QPushButton("\ue0cd")  # file-plus
         self.open_file_btn.setFixedSize(28, 28)
         self.open_file_btn.setToolTip("Open File")
         self.open_file_btn.setStyleSheet(icon_btn_style)
         header_layout.addWidget(self.open_file_btn)
         
         # Open Folder button (icon only)
-        self.open_folder_btn = QPushButton("\ue219")  # folder-open
+        self.open_folder_btn = QPushButton("\ue246")  # folder-open
         self.open_folder_btn.setFixedSize(28, 28)
         self.open_folder_btn.setToolTip("Open Folder")
         self.open_folder_btn.setStyleSheet(icon_btn_style)
@@ -116,8 +121,8 @@ class FileListWidget(QWidget):
         layout.addWidget(self.file_list)
         
         # Patient Info Section
-        patient_header = QLabel("👤 Patient Info")
-        patient_header.setFont(QFont("Arial", 11, QFont.Bold))
+        patient_header = QLabel(" Patient Info")
+        patient_header.setFont(QFont("lucide", 11, QFont.Bold))
         patient_header.setStyleSheet("color: #ffffff; padding: 5px 5px 0px 5px; margin-top: 8px;")
         layout.addWidget(patient_header)
         
@@ -149,7 +154,7 @@ class FileListWidget(QWidget):
             return
         
         filename = os.path.basename(filepath)
-        item = QListWidgetItem(f"📄 {filename}")
+        item = QListWidgetItem(f" {filename}")
         item.setData(Qt.UserRole, filepath)
         if info:
             item.setToolTip(f"{filepath}\n{info}")
@@ -251,36 +256,39 @@ class ToolbarWidget(QToolBar):
             }
         """)
         
-        # Create tool buttons
+        # Create tool buttons using QToolButton (supports custom fonts for Lucide icons)
         # Note: Zoom (scroll wheel) and Pan (right-click drag) are always available via FAST's built-in controls
         
         # Rotate tool
-        self.rotate_action = QAction("🔄 Rotate", self)
+        self.rotate_action = QToolButton(self)
+        self.rotate_action.setText(" Rotate")
+        self.rotate_action.setFont(QFont("lucide", 11))
         self.rotate_action.setCheckable(True)
         self.rotate_action.setToolTip("Rotate image")
-        self.addAction(self.rotate_action)
-
+        self.addWidget(self.rotate_action)
                 
         # Reset View (not checkable - just an action)
-        self.reset_action = QAction("🎯 Reset", self)
+        self.reset_action = QToolButton(self)
+        self.reset_action.setText(" Reset")
+        self.reset_action.setFont(QFont("lucide", 11))
         self.reset_action.setCheckable(False)
         self.reset_action.setToolTip("Reset view to default (fit to window)")
-        self.addAction(self.reset_action)
-
+        self.addWidget(self.reset_action)
         
         # Window/Level tool
-        self.wl_action = QAction("☀️ W/L", self)
-        self.wl_action.setCheckable(True)
+        self.wl_action = QToolButton(self)
+        self.wl_action.setText(" W/L")
+        self.wl_action.setFont(QFont("lucide", 11))
         self.wl_action.setCheckable(True)
         self.wl_action.setToolTip("Window/Level: Drag up/down for brightness, left/right for contrast")
-        self.addAction(self.wl_action)
-
+        self.addWidget(self.wl_action)
         
         self.addSeparator()
         
         # Annotate tool with dropdown menu
         self.annotate_button = QToolButton(self)
-        self.annotate_button.setText("✏️ Annotate")
+        self.annotate_button.setText(" Annotate")
+        self.annotate_button.setFont(QFont("lucide", 11))
         self.annotate_button.setToolTip("Annotation tools")
         self.annotate_button.setPopupMode(QToolButton.MenuButtonPopup)
         self.annotate_button.setCheckable(True)
@@ -336,21 +344,175 @@ class ToolbarWidget(QToolBar):
         self.addSeparator()
         
         # Screenshot
-        self.screenshot_action = QAction("📷 Screenshot", self)
+        self.screenshot_action = QToolButton(self)
+        self.screenshot_action.setText(" Screenshot")
+        self.screenshot_action.setFont(QFont("lucide", 11))
         self.screenshot_action.setToolTip("Save screenshot")
-        self.addAction(self.screenshot_action)
+        self.addWidget(self.screenshot_action)
         
         # Settings
-        self.settings_action = QAction("⚙️ Settings", self)
+        self.settings_action = QToolButton(self)
+        self.settings_action.setText(" Settings")
+        self.settings_action.setFont(QFont("lucide", 11))
         self.settings_action.setToolTip("Settings")
-        self.addAction(self.settings_action)
+        self.addWidget(self.settings_action)
         
         self.addSeparator()
         
         # Layers panel toggle action (QAction for overflow menu support)
-        self.layers_toggle_action = QAction("▶ Layers", self)
+        self.layers_toggle_action = QToolButton(self)
+        self.layers_toggle_action.setText(" Layers")
+        self.layers_toggle_action.setFont(QFont("lucide", 11))
         self.layers_toggle_action.setToolTip("Toggle Layers Panel")
-        self.addAction(self.layers_toggle_action)
+        self.addWidget(self.layers_toggle_action)
+
+
+class ShortcutsDialog(QDialog):
+    """Keyboard shortcuts reference dialog."""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(" Keyboard Shortcuts")
+        self.setFixedSize(420, 520)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
+        self.setup_ui()
+    
+    def setup_ui(self):
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #2d2d30;
+                border: 1px solid #3e3e42;
+                border-radius: 8px;
+            }
+            QLabel {
+                color: #cccccc;
+                font-size: 12px;
+            }
+            QScrollArea {
+                border: none;
+                background-color: transparent;
+            }
+        """)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 15, 20, 15)
+        layout.setSpacing(10)
+        
+        # Title with icon and text
+        title_container = QWidget()
+        title_layout = QHBoxLayout(title_container)
+        title_layout.setContentsMargins(0, 0, 0, 10)
+        title_layout.setSpacing(8)
+        title_layout.setAlignment(Qt.AlignCenter)
+        
+        title_icon = QLabel("")  # keyboard icon
+        title_icon.setFont(QFont("lucide", 18))
+        title_icon.setStyleSheet("color: #0078d4;")
+        title_layout.addWidget(title_icon)
+        
+        title_text = QLabel("Keyboard Shortcuts")
+        title_text.setFont(QFont("Helvetica Neue", 16, QFont.Bold))
+        title_text.setStyleSheet("color: #ffffff;")
+        title_layout.addWidget(title_text)
+        
+        layout.addWidget(title_container)
+        
+        # Scroll area for shortcuts
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(15)
+        
+        # Define shortcuts by category
+        shortcuts = {
+            "播放控制": [
+                ("Space", "播放 / 暫停"),
+                ("Home", "跳至第一幀"),
+                ("End", "跳至最後一幀"),
+                ("← / →", "上一幀 / 下一幀"),
+                ("Shift+← / →", "快退 / 快進 5 幀"),
+                ("L", "切換循環播放"),
+            ],
+            "檢視控制": [
+                ("滑鼠滾輪", "縮放"),
+                ("右鍵拖曳", "平移"),
+                ("R", "重置檢視"),
+            ],
+            "工具": [
+                ("W", "Window/Level 調整"),
+                ("A", "標註工具"),
+                ("1 / 2 / 3", "線段 / 矩形 / 多邊形"),
+                ("Esc", "取消當前操作"),
+            ],
+            "檔案": [
+                ("Cmd+O", "開啟檔案"),
+                ("Cmd+S", "儲存截圖"),
+            ],
+            "面板": [
+                ("P", "切換圖層面板"),
+                ("?", "顯示此快捷鍵面板"),
+            ],
+        }
+        
+        for category, items in shortcuts.items():
+            # Category header
+            header = QLabel(f"【{category}】")
+            header.setFont(QFont("Helvetica Neue", 12, QFont.Bold))
+            header.setStyleSheet("color: #ffffff; margin-top: 5px;")
+            content_layout.addWidget(header)
+            
+            # Separator line
+            line = QFrame()
+            line.setFrameShape(QFrame.HLine)
+            line.setStyleSheet("background-color: #3e3e42;")
+            line.setFixedHeight(1)
+            content_layout.addWidget(line)
+            
+            # Shortcut items
+            for key, desc in items:
+                item_widget = QWidget()
+                item_layout = QHBoxLayout(item_widget)
+                item_layout.setContentsMargins(10, 2, 10, 2)
+                
+                # Key label (styled as keyboard key)
+                key_label = QLabel(key)
+                key_label.setFixedWidth(120)
+                key_label.setStyleSheet("""
+                    color: #0078d4;
+                    font-family: 'SF Mono', Consolas, Monaco, 'Courier New', monospace;
+                    font-weight: bold;
+                    font-size: 12px;
+                """)
+                item_layout.addWidget(key_label)
+                
+                # Description
+                desc_label = QLabel(desc)
+                desc_label.setStyleSheet("color: #cccccc;")
+                item_layout.addWidget(desc_label)
+                item_layout.addStretch()
+                
+                content_layout.addWidget(item_widget)
+        
+        content_layout.addStretch()
+        scroll.setWidget(content)
+        layout.addWidget(scroll)
+        
+        # Close hint
+        hint = QLabel("按 Esc 或 ? 關閉")
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setStyleSheet("color: #888888; font-size: 11px; margin-top: 10px;")
+        layout.addWidget(hint)
+    
+    def keyPressEvent(self, event):
+        """Close on Esc or ? key."""
+        if event.key() == Qt.Key_Escape or event.text() == '?':
+            self.close()
+        else:
+            super().keyPressEvent(event)
 
 
 class PlaybackControlWidget(QWidget):
@@ -428,47 +590,53 @@ class PlaybackControlWidget(QWidget):
         
         # === Navigation Buttons ===
         # First frame button
-        self.first_btn = QPushButton("⏮")
+        self.first_btn = QPushButton("")  # skip-back
         self.first_btn.setFixedWidth(36)
         self.first_btn.setToolTip("First frame (Home)")
         self.first_btn.setStyleSheet(nav_btn_style)
+        self.first_btn.setFont(QFont("lucide", 14))
         layout.addWidget(self.first_btn)
         
         # Rewind button (-5 frames)
-        self.rewind_btn = QPushButton("⏪")
+        self.rewind_btn = QPushButton("")  # rewind
         self.rewind_btn.setFixedWidth(36)
         self.rewind_btn.setToolTip("Rewind 5 frames")
         self.rewind_btn.setStyleSheet(nav_btn_style)
+        self.rewind_btn.setFont(QFont("lucide", 14))
         layout.addWidget(self.rewind_btn)
         
         # Play/Pause button
-        self.play_btn = QPushButton("▶")
+        self.play_btn = QPushButton("")  # play
         self.play_btn.setFixedWidth(40)
         self.play_btn.setToolTip("Play/Pause (Space)")
         self.play_btn.setStyleSheet(nav_btn_style)
+        self.play_btn.setFont(QFont("lucide", 14))
         layout.addWidget(self.play_btn)
         
         # Forward button (+5 frames)
-        self.forward_btn = QPushButton("⏩")
+        self.forward_btn = QPushButton("")  # fast-forward
         self.forward_btn.setFixedWidth(36)
         self.forward_btn.setToolTip("Forward 5 frames")
         self.forward_btn.setStyleSheet(nav_btn_style)
+        self.forward_btn.setFont(QFont("lucide", 14))
         layout.addWidget(self.forward_btn)
         
         # Last frame button
-        self.last_btn = QPushButton("⏭")
+        self.last_btn = QPushButton("")  # skip-forward
         self.last_btn.setFixedWidth(36)
         self.last_btn.setToolTip("Last frame (End)")
         self.last_btn.setStyleSheet(nav_btn_style)
+        self.last_btn.setFont(QFont("lucide", 14))
         layout.addWidget(self.last_btn)
         
         # Loop toggle button
-        self.loop_btn = QPushButton("🔁")
+        self.loop_btn = QPushButton("")  # repeat
         self.loop_btn.setFixedWidth(36)
         self.loop_btn.setCheckable(True)
         self.loop_btn.setChecked(True)  # Default: loop enabled
         self.loop_btn.setToolTip("Loop playback (L)")
         self.loop_btn.setStyleSheet(nav_btn_style)
+        self.loop_btn.setFont(QFont("lucide", 14))
         layout.addWidget(self.loop_btn)
         
         # Spacing
@@ -489,7 +657,7 @@ class PlaybackControlWidget(QWidget):
         self.time_label = QLabel("00:00 / 00:00")
         self.time_label.setFixedWidth(90)
         self.time_label.setToolTip("Current time / Total time")
-        self.time_label.setStyleSheet("color: #aaaaaa; font-family: 'Consolas', 'Monaco', monospace;")
+        self.time_label.setStyleSheet("color: #aaaaaa; font-family: 'SF Mono', Consolas, Monaco, 'Courier New', monospace;")
         layout.addWidget(self.time_label)
         
         # Separator
@@ -501,7 +669,7 @@ class PlaybackControlWidget(QWidget):
         self.frame_label = QLabel("Frame: 0 / 0")
         self.frame_label.setFixedWidth(110)
         self.frame_label.setToolTip("Current frame / Total frames")
-        self.frame_label.setStyleSheet("font-family: 'Consolas', 'Monaco', monospace;")
+        self.frame_label.setStyleSheet("font-family: 'SF Mono', Consolas, Monaco, 'Courier New', monospace;")
         layout.addWidget(self.frame_label)
         
         # Separator
@@ -513,7 +681,7 @@ class PlaybackControlWidget(QWidget):
         self.wl_label = QLabel("W: 255  L: 127")
         self.wl_label.setFixedWidth(100)
         self.wl_label.setToolTip("Window / Level")
-        self.wl_label.setStyleSheet("font-family: 'Consolas', 'Monaco', monospace;")
+        self.wl_label.setStyleSheet("font-family: 'SF Mono', Consolas, Monaco, 'Courier New', monospace;")
         layout.addWidget(self.wl_label)
     
     def update_time_display(self, current_frame, total_frames):
@@ -563,6 +731,7 @@ class UltrasoundViewerWindow(QMainWindow):
         self.setup_ui()
         self.apply_dark_theme()
         self.connect_signals()
+        self.setup_shortcuts()
         
         # Timer for updating frame info
         self.update_timer = QTimer(self)
@@ -735,9 +904,9 @@ class UltrasoundViewerWindow(QMainWindow):
         self.file_panel.file_list.itemClicked.connect(self.on_file_selected)
         
         # Toolbar - tools (Zoom and Pan are always available via FAST's built-in controls)
-        self.toolbar.reset_action.triggered.connect(self.reset_view)
-        self.toolbar.rotate_action.triggered.connect(self.rotate_image)
-        self.toolbar.wl_action.triggered.connect(lambda checked: self.set_tool('wl' if checked else 'none'))
+        self.toolbar.reset_action.clicked.connect(self.reset_view)
+        self.toolbar.rotate_action.clicked.connect(self.rotate_image)
+        self.toolbar.wl_action.clicked.connect(lambda checked: self.set_tool('wl' if checked else 'none'))
         
         # Annotation tools
         self.toolbar.annotate_button.clicked.connect(lambda checked: self.set_tool('annotate' if checked else 'none'))
@@ -746,7 +915,7 @@ class UltrasoundViewerWindow(QMainWindow):
         self.toolbar.polygon_action.triggered.connect(lambda: self.set_annotation_tool('polygon'))
         
         # Toolbar - other actions
-        self.toolbar.screenshot_action.triggered.connect(self.take_screenshot)
+        self.toolbar.screenshot_action.clicked.connect(self.take_screenshot)
         
         # Playback bar
         self.playback.play_btn.clicked.connect(self.toggle_playback)
@@ -771,7 +940,10 @@ class UltrasoundViewerWindow(QMainWindow):
         self.layer_panel.visibility_changed.connect(self.on_annotation_visibility_changed)
         
         # Layers panel toggle
-        self.toolbar.layers_toggle_action.triggered.connect(self.toggle_layers_panel)
+        self.toolbar.layers_toggle_action.clicked.connect(self.toggle_layers_panel)
+        
+        # Settings -> show shortcuts
+        self.toolbar.settings_action.clicked.connect(self.show_shortcuts_dialog)
     
     @Slot()
     def open_file_dialog(self):
@@ -938,7 +1110,7 @@ class UltrasoundViewerWindow(QMainWindow):
             # Start computation thread
             self.computation_thread.start()
             self.is_playing = True
-            self.playback.play_btn.setText("⏸")
+            self.playback.play_btn.setText("")  # pause icon
             
             # Event-driven centering: poll until first frame is rendered
             self._center_attempts = 0
@@ -988,14 +1160,14 @@ class UltrasoundViewerWindow(QMainWindow):
                 # Pause
                 if hasattr(self.current_streamer, 'setPause'):
                     self.current_streamer.setPause(True)
-                self.playback.play_btn.setText("▶")
+                self.playback.play_btn.setText("")  # play icon
                 self.is_playing = False
                 self.status_bar.showMessage("Paused")
             else:
                 # Play
                 if hasattr(self.current_streamer, 'setPause'):
                     self.current_streamer.setPause(False)
-                self.playback.play_btn.setText("⏸")
+                self.playback.play_btn.setText("")  # pause icon
                 self.is_playing = True
                 self.status_bar.showMessage("Playing")
     
@@ -1186,14 +1358,14 @@ class UltrasoundViewerWindow(QMainWindow):
             self._saved_layer_width = sizes[2]
             sizes[2] = 0
             self.main_splitter.setSizes(sizes)
-            self.toolbar.layers_toggle_action.setText("◀ Layers")  # Click to open
+            self.toolbar.layers_toggle_action.setText(" Layers")  # chevron-left: click to open
             self.status_bar.showMessage("Layers panel hidden")
         else:
             # Panel is hidden, restore it
             restore_width = getattr(self, '_saved_layer_width', 300)
             sizes[2] = restore_width
             self.main_splitter.setSizes(sizes)
-            self.toolbar.layers_toggle_action.setText("▶ Layers")  # Click to close
+            self.toolbar.layers_toggle_action.setText(" Layers")  # chevron-right: click to close
             self.status_bar.showMessage("Layers panel shown")
     
     def rotate_image(self):
@@ -1271,6 +1443,69 @@ class UltrasoundViewerWindow(QMainWindow):
             except Exception as e:
                 QMessageBox.warning(self, "Warning", f"Could not save screenshot:\n{str(e)}")
     
+    def setup_shortcuts(self):
+        """Setup keyboard shortcuts."""
+        # Shortcuts dialog - use Shift+/ for ? key, and also F1
+        self.shortcut_help = QShortcut(QKeySequence("?"), self)
+        self.shortcut_help.activated.connect(self.show_shortcuts_dialog)
+        
+        # Playback shortcuts
+        self.shortcut_space = QShortcut(QKeySequence(Qt.Key_Space), self)
+        self.shortcut_space.activated.connect(self.toggle_playback)
+        
+        self.shortcut_home = QShortcut(QKeySequence(Qt.Key_Home), self)
+        self.shortcut_home.activated.connect(self.first_frame)
+        
+        self.shortcut_end = QShortcut(QKeySequence(Qt.Key_End), self)
+        self.shortcut_end.activated.connect(self.last_frame)
+        
+        self.shortcut_left = QShortcut(QKeySequence(Qt.Key_Left), self)
+        self.shortcut_left.activated.connect(self.prev_frame)
+        
+        self.shortcut_right = QShortcut(QKeySequence(Qt.Key_Right), self)
+        self.shortcut_right.activated.connect(self.next_frame)
+        
+        self.shortcut_shift_left = QShortcut(QKeySequence("Shift+Left"), self)
+        self.shortcut_shift_left.activated.connect(self.rewind_frames)
+        
+        self.shortcut_shift_right = QShortcut(QKeySequence("Shift+Right"), self)
+        self.shortcut_shift_right.activated.connect(self.forward_frames)
+        
+        self.shortcut_loop = QShortcut(QKeySequence("L"), self)
+        self.shortcut_loop.activated.connect(lambda: self.playback.loop_btn.toggle())
+        
+        # View shortcuts
+        self.shortcut_reset = QShortcut(QKeySequence("R"), self)
+        self.shortcut_reset.activated.connect(self.reset_view)
+        
+        # Tool shortcuts
+        self.shortcut_wl = QShortcut(QKeySequence("W"), self)
+        self.shortcut_wl.activated.connect(lambda: self.toolbar.wl_action.trigger())
+        
+        self.shortcut_annotate = QShortcut(QKeySequence("A"), self)
+        self.shortcut_annotate.activated.connect(lambda: self.toolbar.annotate_button.click())
+        
+        self.shortcut_line = QShortcut(QKeySequence("1"), self)
+        self.shortcut_line.activated.connect(lambda: self.set_annotation_tool('line'))
+        
+        self.shortcut_rect = QShortcut(QKeySequence("2"), self)
+        self.shortcut_rect.activated.connect(lambda: self.set_annotation_tool('rectangle'))
+        
+        self.shortcut_polygon = QShortcut(QKeySequence("3"), self)
+        self.shortcut_polygon.activated.connect(lambda: self.set_annotation_tool('polygon'))
+        
+        self.shortcut_escape = QShortcut(QKeySequence(Qt.Key_Escape), self)
+        self.shortcut_escape.activated.connect(lambda: self.set_tool('none'))
+        
+        # Panel shortcuts
+        self.shortcut_layers = QShortcut(QKeySequence("P"), self)
+        self.shortcut_layers.activated.connect(self.toggle_layers_panel)
+    
+    def show_shortcuts_dialog(self):
+        """Show keyboard shortcuts dialog."""
+        dialog = ShortcutsDialog(self)
+        dialog.exec_()
+    
     def closeEvent(self, event):
         """Handle window close."""
         if self.computation_thread:
@@ -1284,6 +1519,11 @@ def run_qt_app(filepath=None):
     app = QApplication.instance()
     if app is None:
         app = QApplication(sys.argv)
+    
+    # Set default application font to avoid missing font warnings
+    default_font = QFont("Helvetica Neue", 11)
+    default_font.setStyleHint(QFont.SansSerif)
+    app.setFont(default_font)
     
     # Load Lucide icon font
     from PySide2.QtGui import QFontDatabase
