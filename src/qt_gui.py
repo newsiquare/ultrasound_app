@@ -938,6 +938,7 @@ class UltrasoundViewerWindow(QMainWindow):
             self.annotation_overlay.preview_cleared.connect(self.on_preview_cleared)
         self.layer_panel.annotation_deleted.connect(self.on_annotation_deleted)
         self.layer_panel.visibility_changed.connect(self.on_annotation_visibility_changed)
+        self.layer_panel.class_type_changed.connect(self.on_annotation_class_changed)
         
         # Layers panel toggle
         self.toolbar.layers_toggle_action.clicked.connect(self.toggle_layers_panel)
@@ -1281,6 +1282,14 @@ class UltrasoundViewerWindow(QMainWindow):
         # Also update FAST annotation manager
         if self.fast_annotation_manager:
             self.fast_annotation_manager.set_visibility(annotation, visible)
+    
+    def on_annotation_class_changed(self, annotation, class_type):
+        """Handle annotation class type change from layer panel."""
+        # Update FAST annotation manager to re-render with new color
+        if self.fast_annotation_manager:
+            self.fast_annotation_manager.update_annotation(annotation)
+        if self.annotation_overlay:
+            self.annotation_overlay.update()  # Refresh display
     
     def on_annotation_added(self, annotation):
         """Handle new annotation added - sync to FAST annotation manager."""

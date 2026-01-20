@@ -14,6 +14,14 @@ import fast
 import math
 from typing import List, Tuple, Optional, Dict, Any
 
+# Class type colors for annotation rendering (RGB 0-1 range)
+CLASS_COLORS = {
+    'None': (0.0, 1.0, 1.0),        # Cyan (default)
+    'Thrombus': (1.0, 0.42, 0.42),  # Red
+    'Plaque': (1.0, 0.85, 0.24),    # Yellow
+    'Calcification': (0.42, 0.80, 1.0),  # Blue
+}
+
 
 def to_fast_color(color_tuple: Tuple[float, float, float]) -> fast.Color:
     """Convert RGB tuple (0-1 range) to FAST Color."""
@@ -198,28 +206,29 @@ class FASTAnnotationManager:
         self.preview_points: List[Tuple[float, float]] = []
         self.preview_tool: Optional[str] = None
         
-        # FAST Renderers - created lazily
-        self._line_renderer: Optional[fast.LineRenderer] = None
+        # FAST Renderers - one LineRenderer per class_type for color support
+        self._line_renderers: Dict[str, fast.LineRenderer] = {}  # class_type -> LineRenderer
+        self._line_meshes: Dict[str, fast.Mesh] = {}  # class_type -> Mesh
         self._vertex_renderer: Optional[fast.VertexRenderer] = None
         self._text_renderers: Dict[int, fast.TextRenderer] = {}
         
-        # Current mesh data
-        self._current_mesh: Optional[fast.Mesh] = None
+        # Preview renderer (always cyan)
+        self._preview_renderer: Optional[fast.LineRenderer] = None
         self._preview_mesh: Optional[fast.Mesh] = None
         
         # Flags
         self._renderers_added = False
         self._needs_update = True
     
-    @property
-    def line_renderer(self) -> fast.LineRenderer:
-        """Get or create LineRenderer."""
-        if self._line_renderer is None:
-            # Create with cyan color, 0.5 line width, drawOnTop=True
-            self._line_renderer = fast.LineRenderer.create(
-                fast.Color.Cyan(), 0.5, True
+    def _get_or_create_renderer(self, class_type: str) -> fast.LineRenderer:
+        """Get or create a LineRenderer for the given class type."""
+        if class_type not in self._line_renderers:
+            color = CLASS_COLORS.get(class_type, CLASS_COLORS['None'])
+            renderer = fast.LineRenderer.create(
+                fast.Color(color[0], color[1], color[2]), 0.5, True
             )
-        return self._line_renderer
+            self._line_renderers[class_type] = renderer
+        return self._line_renderers[class_type]
     
     @property
     def vertex_renderer(self) -> fast.VertexRenderer:
@@ -302,6 +311,17 @@ class FASTAnnotationManager:
         self._needs_update = True
         self.update_renderers()
     
+    def update_annotation(self, annotation):
+        """
+        Update an annotation (e.g., after color change).
+        
+        Args:
+            annotation: The annotation that was modified
+        """
+        if annotation in self.annotations:
+            self._needs_update = True
+            self.update_renderers()
+    
     def set_preview(self, tool: str, points: List[Tuple[float, float]]):
         """
         Set preview points for annotation being drawn.
@@ -328,81 +348,80 @@ class FASTAnnotationManager:
         Rebuild meshes and update all renderers.
         
         This is called whenever annotations change.
+        Uses separate LineRenderer for each class_type to support per-class colors.
         """
         if not self._needs_update:
             return
         
-        # Build mesh from all visible annotations
-        all_vertices = []
-        all_lines = []
-        vertex_offset = 0
-        
         print(f"[FASTAnnotationManager] update_renderers: processing {len(self.annotations)} annotations")
-        for i, ann in enumerate(self.annotations):
-            print(f"[FASTAnnotationManager]   Annotation {i}: type={type(ann).__name__}, visible={ann.visible}, points={len(ann.points) if hasattr(ann, 'points') else 'N/A'}")
+        
+        # Group annotations by class_type
+        annotations_by_class: Dict[str, List[Any]] = {}
+        for ann in self.annotations:
             if not ann.visible:
                 continue
+            class_type = getattr(ann, 'class_type', 'None')
+            if class_type not in annotations_by_class:
+                annotations_by_class[class_type] = []
+            annotations_by_class[class_type].append(ann)
+        
+        # Remove old renderers
+        for class_type, renderer in list(self._line_renderers.items()):
+            try:
+                self.view.removeRenderer(renderer)
+            except Exception:
+                pass
+        self._line_renderers.clear()
+        self._line_meshes.clear()
+        
+        # Remove old preview renderer
+        if self._preview_renderer:
+            try:
+                self.view.removeRenderer(self._preview_renderer)
+            except Exception:
+                pass
+            self._preview_renderer = None
+        
+        # Create mesh and renderer for each class_type
+        for class_type, anns in annotations_by_class.items():
+            vertices = []
+            lines = []
+            vertex_offset = 0
             
-            vertices, lines = self._annotation_to_mesh_data(ann, vertex_offset)
-            print(f"[FASTAnnotationManager]   -> Got {len(vertices)} vertices, {len(lines)} lines")
-            all_vertices.extend(vertices)
-            all_lines.extend(lines)
-            vertex_offset += len(vertices)
+            for ann in anns:
+                ann_vertices, ann_lines = self._annotation_to_mesh_data(ann, vertex_offset)
+                vertices.extend(ann_vertices)
+                lines.extend(ann_lines)
+                vertex_offset += len(ann_vertices)
+            
+            if vertices and lines:
+                # Create mesh
+                mesh = fast.Mesh.create(vertices, lines, [])
+                self._line_meshes[class_type] = mesh
+                
+                # Create renderer with class color
+                color = CLASS_COLORS.get(class_type, CLASS_COLORS['None'])
+                renderer = fast.LineRenderer.create(
+                    fast.Color(color[0], color[1], color[2]), 0.5, True
+                )
+                renderer.addInputData(mesh)
+                self.view.addRenderer(renderer)
+                self._line_renderers[class_type] = renderer
+                
+                print(f"[FASTAnnotationManager] Created renderer for {class_type}: {len(vertices)} vertices, {len(lines)} lines")
         
-        # Add preview if exists
+        # Handle preview separately (always cyan)
         if self.preview_tool and len(self.preview_points) >= 1:
-            preview_vertices, preview_lines = self._preview_to_mesh_data(vertex_offset)
-            all_vertices.extend(preview_vertices)
-            all_lines.extend(preview_lines)
+            preview_vertices, preview_lines = self._preview_to_mesh_data(0)
+            if preview_vertices and preview_lines:
+                self._preview_mesh = fast.Mesh.create(preview_vertices, preview_lines, [])
+                self._preview_renderer = fast.LineRenderer.create(
+                    fast.Color(0.0, 1.0, 1.0), 0.5, True  # Cyan for preview
+                )
+                self._preview_renderer.addInputData(self._preview_mesh)
+                self.view.addRenderer(self._preview_renderer)
         
-        # Create mesh and update renderer
-        try:
-            if all_vertices and all_lines:
-                print(f"[FASTAnnotationManager] Creating mesh with {len(all_vertices)} vertices, {len(all_lines)} lines")
-                new_mesh = fast.Mesh.create(all_vertices, all_lines, [])
-                
-                # Store mesh reference to prevent garbage collection
-                self._current_mesh = new_mesh
-                
-                # Check if we need to recreate the renderer (to avoid addInputData accumulation)
-                if self._renderers_added:
-                    # Remove old renderer and create new one
-                    try:
-                        self.view.removeRenderer(self._line_renderer)
-                    except Exception:
-                        pass
-                    self._line_renderer = fast.LineRenderer.create(
-                        fast.Color.Cyan(), 0.5, True
-                    )
-                    self._line_renderer.addInputData(self._current_mesh)
-                    self.view.addRenderer(self._line_renderer)
-                else:
-                    # First time - just add input
-                    self._line_renderer = fast.LineRenderer.create(
-                        fast.Color.Cyan(), 0.5, True
-                    )
-                    self._line_renderer.addInputData(self._current_mesh)
-                
-                print(f"[FASTAnnotationManager] Mesh added to renderer")
-            else:
-                # No annotations - remove renderer if it exists
-                print(f"[FASTAnnotationManager] No vertices/lines to render")
-                if self._renderers_added and self._line_renderer:
-                    try:
-                        self.view.removeRenderer(self._line_renderer)
-                        self._renderers_added = False
-                    except Exception:
-                        pass
-                self._current_mesh = None
-        except Exception as e:
-            print(f"[FASTAnnotationManager] Error updating line renderer: {e}")
-            import traceback
-            traceback.print_exc()
-        
-        # Mark renderers as added if we have content
-        if self._current_mesh is not None:
-            self._renderers_added = True
-        
+        self._renderers_added = len(self._line_renderers) > 0 or self._preview_renderer is not None
         self._needs_update = False
     
     def _annotation_to_mesh_data(self, annotation, vertex_offset: int

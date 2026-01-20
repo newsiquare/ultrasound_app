@@ -10,7 +10,8 @@ Note: Actual rendering is handled by FASTAnnotationManager in fast_annotations.p
 """
 
 from PySide2.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLabel, 
-                                QPushButton, QCheckBox, QScrollArea, QSizePolicy)
+                                QPushButton, QCheckBox, QScrollArea, QSizePolicy,
+                                QComboBox, QStyledItemDelegate, QStyle)
 from PySide2.QtCore import Qt, QPoint, QRect, Signal
 from PySide2.QtGui import QPainter, QPen, QColor, QBrush, QFont, QPainterPath
 import math
@@ -19,6 +20,14 @@ from typing import Tuple, List, Optional
 
 # Default annotation color (Cyan) as RGB tuple (0-1 range)
 DEFAULT_COLOR = (0.0, 1.0, 1.0)
+
+# Annotation class types with colors (RGB 0-1 range)
+CLASS_TYPES = {
+    'None': {'color': (0.0, 1.0, 1.0), 'hex': '#00FFFF'},      # Cyan (default)
+    'Thrombus': {'color': (1.0, 0.42, 0.42), 'hex': '#FF6B6B'},  # Red
+    'Plaque': {'color': (1.0, 0.85, 0.24), 'hex': '#FFD93D'},    # Yellow
+    'Calcification': {'color': (0.42, 0.80, 1.0), 'hex': '#6BCBFF'},  # Blue
+}
 
 
 class Annotation:
@@ -52,10 +61,17 @@ class Annotation:
         Annotation._id_counter += 1
         self.id = Annotation._id_counter
         self.color = color  # RGB tuple (0-1 range)
+        self.class_type = 'None'  # Classification type (Thrombus, Plaque, Calcification)
         self.points: List[Tuple[float, float]] = []  # List of (x, y) pixel coordinates
         self.completed = False
         self.selected = False
         self.visible = True
+    
+    def set_class_type(self, class_type: str):
+        """Set annotation class type and update color."""
+        if class_type in CLASS_TYPES:
+            self.class_type = class_type
+            self.color = CLASS_TYPES[class_type]['color']
     
     def _px_to_mm(self, pixels):
         """Convert pixels to mm if pixel_spacing available."""
@@ -502,11 +518,37 @@ class AnnotationOverlay(QWidget):
             self.update()
 
 
+class ClassColorDelegate(QStyledItemDelegate):
+    """Custom delegate to render class type items with their corresponding colors."""
+    
+    def paint(self, painter, option, index):
+        # Get the class name from the item
+        class_name = index.data(Qt.DisplayRole)
+        
+        # Get the color for this class
+        color_hex = CLASS_TYPES.get(class_name, CLASS_TYPES['None'])['hex']
+        
+        # Draw the background if selected/hovered
+        if option.state & QStyle.State_Selected:
+            painter.fillRect(option.rect, QColor('#094771'))
+        elif option.state & QStyle.State_MouseOver:
+            painter.fillRect(option.rect, QColor('#3e3e42'))
+        else:
+            painter.fillRect(option.rect, QColor('#252526'))
+        
+        # Draw the text with the class color
+        painter.setPen(QColor(color_hex))
+        painter.setFont(option.font)
+        text_rect = option.rect.adjusted(8, 0, -4, 0)  # Add left padding
+        painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, class_name)
+
+
 class LayerItemWidget(QWidget):
-    """Custom widget for each annotation layer item."""
+    """Custom widget for each annotation layer item with table-style layout."""
     
     visibility_toggled = Signal(object, bool)
     delete_clicked = Signal(object)
+    class_changed = Signal(object, str)  # annotation, new_class_type
     
     def __init__(self, annotation, parent=None):
         super().__init__(parent)
@@ -515,13 +557,13 @@ class LayerItemWidget(QWidget):
         self.is_visible = True
         
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(8)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(6)
         
-        # Visibility toggle button (Lucide icons)
+        # Column 1: Visibility toggle (24px)
         self.visibility_btn = QPushButton("\ue0be")  # eye icon
         self.visibility_btn.setFixedSize(24, 24)
-        self.visibility_btn.setFont(QFont("lucide", 14))
+        self.visibility_btn.setFont(QFont("lucide", 12))
         self.visibility_btn.setStyleSheet("""
             QPushButton {
                 background-color: transparent;
@@ -536,50 +578,69 @@ class LayerItemWidget(QWidget):
         self.visibility_btn.clicked.connect(self._toggle_visibility)
         layout.addWidget(self.visibility_btn)
         
-        # Shape icon (Lucide icons)
+        # Column 2: Shape icon (24px)
         icons = {
             'Line': '\ue11f',        # minus
             'Rectangle': '\ue379',   # rectangle-horizontal
-            'Polygon': '\ue27d',     # pentagon (or hexagon)
+            'Polygon': '\ue27d',     # pentagon
         }
         name = annotation.get_name()
         shape_type = name.split()[0] if name else 'Shape'
-        icon = icons.get(shape_type, '\ue27d')  # default to polygon icon
+        icon = icons.get(shape_type, '\ue27d')
         
-        icon_label = QLabel(icon)
-        icon_label.setFont(QFont("lucide", 14))
-        icon_label.setStyleSheet("color: #00ffff;")
-        icon_label.setFixedWidth(24)
-        layout.addWidget(icon_label)
+        self.icon_label = QLabel(icon)
+        self.icon_label.setFont(QFont("lucide", 12))
+        self.icon_label.setStyleSheet("color: #00ffff;")
+        self.icon_label.setFixedWidth(24)
+        self.icon_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.icon_label)
         
-        # Name and measurements (can shrink when panel is narrowed)
-        info_container = QWidget()
-        info_container.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        info_layout = QVBoxLayout(info_container)
-        info_layout.setSpacing(2)
-        info_layout.setContentsMargins(0, 0, 0, 0)
+        # Column 3: Label name (60px fixed)
+        self.name_label = QLabel(name)
+        self.name_label.setFixedWidth(60)
+        self.name_label.setStyleSheet("color: #ffffff; font-size: 11px;")
+        self.name_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        layout.addWidget(self.name_label)
         
-        name_label = QLabel(name)
-        name_label.setStyleSheet("color: #ffffff; font-size: 12px; font-weight: bold;")
-        info_layout.addWidget(name_label)
+        # Column 4: Class dropdown (90px)
+        self.class_combo = QComboBox()
+        self.class_combo.setFixedWidth(90)
+        self.class_combo.setFixedHeight(22)
         
+        # Use custom delegate for colored items in dropdown
+        self.class_combo.setItemDelegate(ClassColorDelegate(self.class_combo))
+        
+        # Add class options
+        for class_name in CLASS_TYPES.keys():
+            self.class_combo.addItem(class_name)
+        
+        # Set current class
+        current_index = list(CLASS_TYPES.keys()).index(annotation.class_type) if annotation.class_type in CLASS_TYPES else 0
+        self.class_combo.setCurrentIndex(current_index)
+        
+        self._update_combo_style()
+        self.class_combo.currentTextChanged.connect(self._on_class_changed)
+        layout.addWidget(self.class_combo)
+        
+        # Column 5: Measurements info (fixed 30px with tooltip)
         measurements = annotation.get_measurements()
-        measure_text = " | ".join([f"{k}:{v}" for k, v in measurements.items()])
-        measure_label = QLabel(measure_text)
-        measure_label.setStyleSheet("color: #888888; font-size: 10px;")
-        info_layout.addWidget(measure_label)
+        full_measure_text = " | ".join([f"{v}" for v in measurements.values()])
+        self.measure_label = QLabel("...")
+        self.measure_label.setFixedWidth(30)
+        self.measure_label.setStyleSheet("color: #888888; font-size: 10px;")
+        self.measure_label.setAlignment(Qt.AlignCenter)
+        self.measure_label.setToolTip(full_measure_text)  # Hover to show full info
+        layout.addWidget(self.measure_label)
         
-        layout.addWidget(info_container, 1)  # stretch=1, same as control row
-        
-        # Delete button (QPushButton for consistent rendering with control row)
+        # Column 6: Delete button (24px)
         self.delete_btn = QPushButton("\ue18d")  # trash-2 icon
         self.delete_btn.setFixedSize(24, 24)
-        self.delete_btn.setFont(QFont("lucide", 14))
+        self.delete_btn.setFont(QFont("lucide", 12))
         self.delete_btn.setStyleSheet("""
             QPushButton {
                 background-color: transparent;
                 border: none;
-                color: #888888;
+                color: #555555;
             }
             QPushButton:hover {
                 background-color: #ff5555;
@@ -591,6 +652,7 @@ class LayerItemWidget(QWidget):
         self.delete_btn.clicked.connect(self._on_delete_clicked)
         layout.addWidget(self.delete_btn)
         
+        self.setFixedHeight(32)
         self.setStyleSheet("""
             LayerItemWidget {
                 background-color: #2d2d30;
@@ -601,17 +663,69 @@ class LayerItemWidget(QWidget):
             }
         """)
     
+    def _update_combo_style(self):
+        """Update combo box style based on selected class."""
+        class_type = self.class_combo.currentText()
+        color_hex = CLASS_TYPES.get(class_type, CLASS_TYPES['None'])['hex']
+        
+        self.class_combo.setStyleSheet(f"""
+            QComboBox {{
+                background-color: #252526;
+                border: 1px solid {color_hex};
+                border-radius: 3px;
+                color: {color_hex};
+                font-size: 10px;
+                padding: 2px 4px;
+            }}
+            QComboBox:hover {{
+                border: 1px solid {color_hex};
+                background-color: #3e3e42;
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: 16px;
+            }}
+            QComboBox::down-arrow {{
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 5px solid {color_hex};
+                margin-right: 4px;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: #252526;
+                border: 1px solid #3e3e42;
+                selection-background-color: #094771;
+                color: #cccccc;
+            }}
+        """)
+        
+        # Also update icon color to match class
+        self.icon_label.setStyleSheet(f"color: {color_hex};")
+    
+    def _on_class_changed(self, class_type):
+        """Handle class type change."""
+        self._update_combo_style()
+        self.class_changed.emit(self.annotation, class_type)
+    
     def _toggle_visibility(self):
         """Toggle visibility and update icon."""
         self.is_visible = not self.is_visible
-        # Lucide icons: e0be = eye, e0bf = eye-off
         self.visibility_btn.setText("\ue0be" if self.is_visible else "\ue0bf")
-        self.visibility_btn.setStyleSheet("""
-            QPushButton {
+        
+        class_type = self.class_combo.currentText()
+        color_hex = CLASS_TYPES.get(class_type, CLASS_TYPES['None'])['hex']
+        
+        self.visibility_btn.setStyleSheet(f"""
+            QPushButton {{
                 background-color: transparent;
                 border: none;
-                color: """ + ("#00ffff" if self.is_visible else "#555555") + """;
-            }
+                color: {color_hex if self.is_visible else '#555555'};
+            }}
+            QPushButton:hover {{
+                background-color: #3e3e42;
+                border-radius: 3px;
+            }}
         """)
         self.visibility_toggled.emit(self.annotation, self.is_visible)
     
@@ -620,25 +734,26 @@ class LayerItemWidget(QWidget):
 
 
 class LayerPanelWidget(QWidget):
-    """Right panel displaying annotation layers with professional UI."""
+    """Right panel displaying annotation layers with professional table-style UI."""
     
     annotation_deleted = Signal(object)
     annotation_selected = Signal(object)
     visibility_changed = Signal(object, bool)
+    class_type_changed = Signal(object, str)  # annotation, new_class_type
     collapse_requested = Signal()  # Signal to request panel collapse
     
     def __init__(self, parent=None):
         super().__init__(parent)
         from PySide2.QtWidgets import QVBoxLayout, QScrollArea, QLabel, QPushButton
         
-        self.setMinimumWidth(200)
-        self.setMaximumWidth(300)
+        self.setMinimumWidth(280)
+        self.setMaximumWidth(350)
         
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(8, 8, 8, 8)
-        main_layout.setSpacing(8)
+        main_layout.setSpacing(6)
         
-        # Header with title and count (simplified)
+        # Header with title and count
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
         
@@ -660,51 +775,69 @@ class LayerPanelWidget(QWidget):
         separator.setStyleSheet("background-color: #3e3e42;")
         main_layout.addWidget(separator)
         
-        # Control row: use SAME layout structure as LayerItemWidget for alignment
-        control_layout = QHBoxLayout()
-        control_layout.setContentsMargins(8, 6, 8, 6)  # Same as item
-        control_layout.setSpacing(8)  # Same as item
+        # Column header row (table header style)
+        column_header = QWidget()
+        column_header.setFixedHeight(24)
+        column_layout = QHBoxLayout(column_header)
+        column_layout.setContentsMargins(8, 0, 8, 0)
+        column_layout.setSpacing(6)
         
-        # 1. Global visibility toggle button (same position as item eye)
+        # Header: Global visibility toggle
         self.global_visibility_btn = QPushButton("\ue0be")  # eye icon
-        self.global_visibility_btn.setFixedSize(24, 24)
-        self.global_visibility_btn.setFont(QFont("lucide", 14))
+        self.global_visibility_btn.setFixedSize(24, 20)
+        self.global_visibility_btn.setFont(QFont("lucide", 10))
         self.global_visibility_btn.setStyleSheet("""
             QPushButton {
                 background-color: transparent;
                 border: none;
-                color: #888888;
+                color: #666666;
             }
             QPushButton:hover {
-                background-color: #3e3e42;
-                border-radius: 3px;
+                color: #00ffff;
             }
         """)
         self.global_visibility_btn.setCursor(Qt.PointingHandCursor)
         self.global_visibility_btn.clicked.connect(self._toggle_all_visibility)
-        control_layout.addWidget(self.global_visibility_btn)
+        column_layout.addWidget(self.global_visibility_btn)
         
-        # 2. Blocks icon for shape indicator
-        spacer_icon = QLabel("\ue4fe")  # blocks icon
-        spacer_icon.setFont(QFont("lucide", 14))
-        spacer_icon.setStyleSheet("color: #888888;")
-        spacer_icon.setFixedWidth(24)
-        control_layout.addWidget(spacer_icon)
+        # Header: Shape icon column
+        icon_header = QLabel("\ue4fe")  # blocks icon
+        icon_header.setFont(QFont("lucide", 10))
+        icon_header.setStyleSheet("color: #666666;")
+        icon_header.setFixedWidth(24)
+        icon_header.setAlignment(Qt.AlignCenter)
+        column_layout.addWidget(icon_header)
         
-        # 3. Label info text (same position as item info_container)
-        label_info = QLabel("Label info")
-        label_info.setStyleSheet("color: #888888; font-size: 11px;")
-        control_layout.addWidget(label_info, 1)
+        # Header: Label column
+        label_header = QLabel("Label")
+        label_header.setFixedWidth(60)
+        label_header.setStyleSheet("color: #666666; font-size: 10px;")
+        label_header.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        column_layout.addWidget(label_header)
         
-        # 4. Clear all button (same position as item trash)
+        # Header: Class column
+        class_header = QLabel("Class")
+        class_header.setFixedWidth(90)
+        class_header.setStyleSheet("color: #666666; font-size: 10px;")
+        class_header.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        column_layout.addWidget(class_header)
+        
+        # Header: Info column (fixed 30px to match item)
+        info_header = QLabel("Info")
+        info_header.setFixedWidth(30)
+        info_header.setStyleSheet("color: #666666; font-size: 10px;")
+        info_header.setAlignment(Qt.AlignCenter)
+        column_layout.addWidget(info_header)
+        
+        # Header: Clear all button
         self.clear_all_btn = QPushButton("\ue18d")  # trash-2 icon
-        self.clear_all_btn.setFixedSize(24, 24)
-        self.clear_all_btn.setFont(QFont("lucide", 14))
+        self.clear_all_btn.setFixedSize(24, 20)
+        self.clear_all_btn.setFont(QFont("lucide", 10))
         self.clear_all_btn.setStyleSheet("""
             QPushButton {
                 background-color: transparent;
                 border: none;
-                color: #888888;
+                color: #666666;
             }
             QPushButton:hover {
                 background-color: #ff5555;
@@ -714,9 +847,9 @@ class LayerPanelWidget(QWidget):
         """)
         self.clear_all_btn.setCursor(Qt.PointingHandCursor)
         self.clear_all_btn.clicked.connect(self._on_clear_clicked)
-        control_layout.addWidget(self.clear_all_btn)
+        column_layout.addWidget(self.clear_all_btn)
         
-        main_layout.addLayout(control_layout)
+        main_layout.addWidget(column_header)
         
         self.all_visible = True  # Track global visibility state
         
@@ -764,6 +897,7 @@ class LayerPanelWidget(QWidget):
         item_widget = LayerItemWidget(annotation)
         item_widget.visibility_toggled.connect(self._on_visibility_toggled)
         item_widget.delete_clicked.connect(self._on_delete_item)
+        item_widget.class_changed.connect(self._on_class_changed)
         
         # Insert before the stretch
         self.items_layout.insertWidget(self.items_layout.count() - 1, item_widget)
@@ -815,6 +949,11 @@ class LayerPanelWidget(QWidget):
         """Handle clear all button click."""
         self.clear_all()
     
+    def _on_class_changed(self, annotation, class_type):
+        """Handle class type change from item widget."""
+        annotation.set_class_type(class_type)
+        self.class_type_changed.emit(annotation, class_type)
+    
     def _toggle_all_visibility(self):
         """Toggle visibility of all annotations."""
         self.all_visible = not self.all_visible
@@ -828,8 +967,7 @@ class LayerPanelWidget(QWidget):
                 color: """ + ("#00ffff" if self.all_visible else "#555555") + """;
             }
             QPushButton:hover {
-                background-color: #3e3e42;
-                border-radius: 3px;
+                color: """ + ("#00ffff" if self.all_visible else "#888888") + """;
             }
         """)
         
@@ -837,12 +975,20 @@ class LayerPanelWidget(QWidget):
         for annotation, widget in self.item_widgets.items():
             widget.is_visible = self.all_visible
             widget.visibility_btn.setText("\ue0be" if self.all_visible else "\ue0bf")
-            widget.visibility_btn.setStyleSheet("""
-                QPushButton {
+            
+            class_type = widget.class_combo.currentText()
+            color_hex = CLASS_TYPES.get(class_type, CLASS_TYPES['None'])['hex']
+            
+            widget.visibility_btn.setStyleSheet(f"""
+                QPushButton {{
                     background-color: transparent;
                     border: none;
-                    color: """ + ("#00ffff" if self.all_visible else "#555555") + """;
-                }
+                    color: {color_hex if self.all_visible else '#555555'};
+                }}
+                QPushButton:hover {{
+                    background-color: #3e3e42;
+                    border-radius: 3px;
+                }}
             """)
             annotation.visible = self.all_visible
             self.visibility_changed.emit(annotation, self.all_visible)
