@@ -229,17 +229,25 @@ class ToolbarWidget(QToolBar):
             QToolButton {
                 background-color: transparent;
                 border: 1px solid transparent;
+                border-bottom: 3px solid transparent;
                 border-radius: 4px;
                 padding: 6px;
-                color: #ffffff;
+                color: #cccccc;
             }
             QToolButton:hover {
-                background-color: #505050;
-                border: 1px solid #606060;
+                background-color: #4a4a4a;
+                border: 1px solid #505050;
+                border-bottom: 3px solid #0078d4;
+                color: #ffffff;
             }
             QToolButton:checked {
                 background-color: #0078d4;
                 border: 1px solid #0078d4;
+                border-bottom: 3px solid #005a9e;
+                color: #ffffff;
+            }
+            QToolButton:pressed {
+                background-color: #005a9e;
             }
         """)
         
@@ -327,29 +335,6 @@ class ToolbarWidget(QToolBar):
         
         self.addSeparator()
         
-        # Playback controls (use same-length text for consistent button width)
-        self.play_action = QAction("⏸️ Pause", self)  # Start with Pause text
-        self.play_action.setCheckable(True)
-        self.play_action.setChecked(True)  # Start in playing state
-        self.play_action.setToolTip("Play/Pause")
-        self.addAction(self.play_action)
-        
-        # Set fixed width for play button to match Reset/Rotate
-        play_button = self.widgetForAction(self.play_action)
-        if play_button:
-            play_button.setMinimumWidth(75)
-            play_button.setMaximumWidth(75)
-        
-        self.prev_action = QAction("⏮️", self)
-        self.prev_action.setToolTip("Previous frame")
-        self.addAction(self.prev_action)
-        
-        self.next_action = QAction("⏭️", self)
-        self.next_action.setToolTip("Next frame")
-        self.addAction(self.next_action)
-        
-        self.addSeparator()
-        
         # Screenshot
         self.screenshot_action = QAction("📷 Screenshot", self)
         self.screenshot_action.setToolTip("Save screenshot")
@@ -369,15 +354,48 @@ class ToolbarWidget(QToolBar):
 
 
 class PlaybackControlWidget(QWidget):
-    """Bottom playback control bar."""
+    """Bottom playback control bar with enhanced navigation."""
     
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.frame_rate = 30  # Default frame rate for time calculation
         self.setup_ui()
         
     def setup_ui(self):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 5, 10, 5)
+        layout.setSpacing(4)
+        
+        # Common button style with enhanced hover effect
+        nav_btn_style = """
+            QPushButton {
+                background-color: #3c3c3c;
+                color: #cccccc;
+                border: 1px solid #505050;
+                border-bottom: 3px solid #505050;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 14px;
+                min-width: 32px;
+            }
+            QPushButton:hover {
+                background-color: #4a4a4a;
+                color: #ffffff;
+                border-color: #606060;
+                border-bottom: 3px solid #0078d4;
+            }
+            QPushButton:pressed {
+                background-color: #0078d4;
+                border-bottom: 3px solid #005a9e;
+                color: #ffffff;
+            }
+            QPushButton:checked {
+                background-color: #0078d4;
+                border-color: #0078d4;
+                border-bottom: 3px solid #005a9e;
+                color: #ffffff;
+            }
+        """
         
         self.setStyleSheet("""
             QWidget {
@@ -385,16 +403,7 @@ class PlaybackControlWidget(QWidget):
             }
             QLabel {
                 color: #ffffff;
-            }
-            QPushButton {
-                background-color: #3c3c3c;
-                color: #ffffff;
-                border: 1px solid #505050;
-                border-radius: 4px;
-                padding: 5px 10px;
-            }
-            QPushButton:hover {
-                background-color: #505050;
+                font-size: 12px;
             }
             QSlider::groove:horizontal {
                 height: 6px;
@@ -408,36 +417,118 @@ class PlaybackControlWidget(QWidget):
                 background: #0078d4;
                 border-radius: 7px;
             }
+            QSlider::handle:horizontal:hover {
+                background: #1a8cff;
+            }
             QSlider::sub-page:horizontal {
                 background: #0078d4;
                 border-radius: 3px;
             }
         """)
         
+        # === Navigation Buttons ===
+        # First frame button
+        self.first_btn = QPushButton("⏮")
+        self.first_btn.setFixedWidth(36)
+        self.first_btn.setToolTip("First frame (Home)")
+        self.first_btn.setStyleSheet(nav_btn_style)
+        layout.addWidget(self.first_btn)
+        
+        # Rewind button (-5 frames)
+        self.rewind_btn = QPushButton("⏪")
+        self.rewind_btn.setFixedWidth(36)
+        self.rewind_btn.setToolTip("Rewind 5 frames")
+        self.rewind_btn.setStyleSheet(nav_btn_style)
+        layout.addWidget(self.rewind_btn)
+        
         # Play/Pause button
-        self.play_btn = QPushButton("▶️")
+        self.play_btn = QPushButton("▶")
         self.play_btn.setFixedWidth(40)
+        self.play_btn.setToolTip("Play/Pause (Space)")
+        self.play_btn.setStyleSheet(nav_btn_style)
         layout.addWidget(self.play_btn)
         
-        # Frame slider
+        # Forward button (+5 frames)
+        self.forward_btn = QPushButton("⏩")
+        self.forward_btn.setFixedWidth(36)
+        self.forward_btn.setToolTip("Forward 5 frames")
+        self.forward_btn.setStyleSheet(nav_btn_style)
+        layout.addWidget(self.forward_btn)
+        
+        # Last frame button
+        self.last_btn = QPushButton("⏭")
+        self.last_btn.setFixedWidth(36)
+        self.last_btn.setToolTip("Last frame (End)")
+        self.last_btn.setStyleSheet(nav_btn_style)
+        layout.addWidget(self.last_btn)
+        
+        # Loop toggle button
+        self.loop_btn = QPushButton("🔁")
+        self.loop_btn.setFixedWidth(36)
+        self.loop_btn.setCheckable(True)
+        self.loop_btn.setChecked(True)  # Default: loop enabled
+        self.loop_btn.setToolTip("Loop playback (L)")
+        self.loop_btn.setStyleSheet(nav_btn_style)
+        layout.addWidget(self.loop_btn)
+        
+        # Spacing
+        layout.addSpacing(8)
+        
+        # === Frame Slider ===
         self.frame_slider = QSlider(Qt.Horizontal)
         self.frame_slider.setMinimum(0)
         self.frame_slider.setMaximum(100)
         self.frame_slider.setValue(0)
         layout.addWidget(self.frame_slider, 1)
         
+        # Spacing
+        layout.addSpacing(8)
+        
+        # === Info Labels ===
+        # Time display
+        self.time_label = QLabel("00:00 / 00:00")
+        self.time_label.setFixedWidth(90)
+        self.time_label.setToolTip("Current time / Total time")
+        self.time_label.setStyleSheet("color: #aaaaaa; font-family: 'Consolas', 'Monaco', monospace;")
+        layout.addWidget(self.time_label)
+        
+        # Separator
+        sep1 = QLabel("|")
+        sep1.setStyleSheet("color: #505050;")
+        layout.addWidget(sep1)
+        
         # Frame info
         self.frame_label = QLabel("Frame: 0 / 0")
-        self.frame_label.setFixedWidth(120)
+        self.frame_label.setFixedWidth(110)
+        self.frame_label.setToolTip("Current frame / Total frames")
+        self.frame_label.setStyleSheet("font-family: 'Consolas', 'Monaco', monospace;")
         layout.addWidget(self.frame_label)
         
         # Separator
-        layout.addWidget(QLabel("|"))
+        sep2 = QLabel("|")
+        sep2.setStyleSheet("color: #505050;")
+        layout.addWidget(sep2)
         
         # Window/Level info
         self.wl_label = QLabel("W: 255  L: 127")
         self.wl_label.setFixedWidth(100)
+        self.wl_label.setToolTip("Window / Level")
+        self.wl_label.setStyleSheet("font-family: 'Consolas', 'Monaco', monospace;")
         layout.addWidget(self.wl_label)
+    
+    def update_time_display(self, current_frame, total_frames):
+        """Update time label based on frame number and frame rate."""
+        if total_frames <= 0:
+            self.time_label.setText("00:00 / 00:00")
+            return
+        
+        current_sec = current_frame / self.frame_rate
+        total_sec = total_frames / self.frame_rate
+        
+        current_str = f"{int(current_sec // 60):02d}:{int(current_sec % 60):02d}"
+        total_str = f"{int(total_sec // 60):02d}:{int(total_sec % 60):02d}"
+        
+        self.time_label.setText(f"{current_str} / {total_str}")
 
 
 class UltrasoundViewerWindow(QMainWindow):
@@ -654,14 +745,16 @@ class UltrasoundViewerWindow(QMainWindow):
         self.toolbar.rect_action.triggered.connect(lambda: self.set_annotation_tool('rectangle'))
         self.toolbar.polygon_action.triggered.connect(lambda: self.set_annotation_tool('polygon'))
         
-        # Toolbar - playback
-        self.toolbar.play_action.triggered.connect(self.toggle_playback)
-        self.toolbar.prev_action.triggered.connect(self.prev_frame)
-        self.toolbar.next_action.triggered.connect(self.next_frame)
+        # Toolbar - other actions
         self.toolbar.screenshot_action.triggered.connect(self.take_screenshot)
         
         # Playback bar
         self.playback.play_btn.clicked.connect(self.toggle_playback)
+        self.playback.first_btn.clicked.connect(self.first_frame)
+        self.playback.rewind_btn.clicked.connect(self.rewind_frames)
+        self.playback.forward_btn.clicked.connect(self.forward_frames)
+        self.playback.last_btn.clicked.connect(self.last_frame)
+        self.playback.loop_btn.toggled.connect(self.toggle_loop)
         self.playback.frame_slider.sliderPressed.connect(self.on_slider_pressed)
         self.playback.frame_slider.sliderReleased.connect(self.on_slider_released)
         self.playback.frame_slider.valueChanged.connect(self.on_frame_slider_changed)
@@ -845,7 +938,7 @@ class UltrasoundViewerWindow(QMainWindow):
             # Start computation thread
             self.computation_thread.start()
             self.is_playing = True
-            self.playback.play_btn.setText("⏸️")
+            self.playback.play_btn.setText("⏸")
             
             # Event-driven centering: poll until first frame is rendered
             self._center_attempts = 0
@@ -895,18 +988,14 @@ class UltrasoundViewerWindow(QMainWindow):
                 # Pause
                 if hasattr(self.current_streamer, 'setPause'):
                     self.current_streamer.setPause(True)
-                self.playback.play_btn.setText("▶️")
-                self.toolbar.play_action.setText("▶️ Play")
-                self.toolbar.play_action.setChecked(False)
+                self.playback.play_btn.setText("▶")
                 self.is_playing = False
                 self.status_bar.showMessage("Paused")
             else:
                 # Play
                 if hasattr(self.current_streamer, 'setPause'):
                     self.current_streamer.setPause(False)
-                self.playback.play_btn.setText("⏸️")
-                self.toolbar.play_action.setText("⏸️ Pause")
-                self.toolbar.play_action.setChecked(True)
+                self.playback.play_btn.setText("⏸")
                 self.is_playing = True
                 self.status_bar.showMessage("Playing")
     
@@ -945,8 +1034,14 @@ class UltrasoundViewerWindow(QMainWindow):
                     self.playback.frame_slider.setValue(self.current_frame)
                     self.playback.frame_slider.blockSignals(False)
                 
-                # Update label
+                # Update frame label
                 self.playback.frame_label.setText(f"Frame: {self.current_frame + 1} / {self.total_frames}")
+                
+                # Update time display
+                self.playback.update_time_display(self.current_frame, self.total_frames)
+                
+                # Update W/L display
+                self.playback.wl_label.setText(f"W: {self.intensity_window:.0f}  L: {self.intensity_level:.0f}")
             except:
                 pass
     
@@ -1127,6 +1222,36 @@ class UltrasoundViewerWindow(QMainWindow):
         if self.current_streamer and hasattr(self.current_streamer, 'setCurrentFrameIndex'):
             new_frame = min(self.total_frames - 1, self.current_frame + 1)
             self.current_streamer.setCurrentFrameIndex(new_frame)
+    
+    def first_frame(self):
+        """Go to first frame."""
+        if self.current_streamer and hasattr(self.current_streamer, 'setCurrentFrameIndex'):
+            self.current_streamer.setCurrentFrameIndex(0)
+            self.status_bar.showMessage("Jumped to first frame")
+    
+    def last_frame(self):
+        """Go to last frame."""
+        if self.current_streamer and hasattr(self.current_streamer, 'setCurrentFrameIndex'):
+            self.current_streamer.setCurrentFrameIndex(max(0, self.total_frames - 1))
+            self.status_bar.showMessage("Jumped to last frame")
+    
+    def rewind_frames(self):
+        """Rewind 5 frames."""
+        if self.current_streamer and hasattr(self.current_streamer, 'setCurrentFrameIndex'):
+            new_frame = max(0, self.current_frame - 5)
+            self.current_streamer.setCurrentFrameIndex(new_frame)
+    
+    def forward_frames(self):
+        """Forward 5 frames."""
+        if self.current_streamer and hasattr(self.current_streamer, 'setCurrentFrameIndex'):
+            new_frame = min(self.total_frames - 1, self.current_frame + 5)
+            self.current_streamer.setCurrentFrameIndex(new_frame)
+    
+    def toggle_loop(self, enabled):
+        """Toggle loop playback."""
+        if self.current_streamer and hasattr(self.current_streamer, 'setLooping'):
+            self.current_streamer.setLooping(enabled)
+        self.status_bar.showMessage(f"Loop: {'On' if enabled else 'Off'}")
     
     @Slot()
     def take_screenshot(self):
