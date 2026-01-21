@@ -1333,7 +1333,7 @@ class UltrasoundViewerWindow(QMainWindow):
             self.current_file = viewport.current_file
             
             self.is_playing = True
-            self.playback.play_btn.setText("")
+            self.playback.play_btn.setText("\ue131")  # pause icon
         
         self.file_panel.add_file(result.filepath)
         self.file_panel.select_file(result.filepath)
@@ -1396,7 +1396,7 @@ class UltrasoundViewerWindow(QMainWindow):
             
             # Update playback button state
             self.is_playing = True
-            self.playback.play_btn.setText("")  # pause icon
+            self.playback.play_btn.setText("\ue131")  # pause icon
             
             # Event-driven centering
             self._center_attempts = 0
@@ -1440,7 +1440,7 @@ class UltrasoundViewerWindow(QMainWindow):
                 self.current_file = viewport.current_file
                 
                 self.is_playing = True
-                self.playback.play_btn.setText("")
+                self.playback.play_btn.setText("\ue131")  # pause icon
             
             self.file_panel.add_file(filepath)
             self.file_panel.select_file(filepath)
