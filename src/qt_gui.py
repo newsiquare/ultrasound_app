@@ -14,6 +14,7 @@ Requirements:
 import platform
 import os
 import sys
+import numpy as np
 
 # Suppress Qt font warning messages
 os.environ['QT_LOGGING_RULES'] = 'qt.qpa.fonts.warning=false'
@@ -29,20 +30,27 @@ from PySide2.QtWidgets import (
     QSplitter, QListWidget, QListWidgetItem, QToolBar, QToolButton,
     QStatusBar, QSlider, QLabel, QPushButton, QFileDialog, QMessageBox,
     QFrame, QSizePolicy, QAction, QActionGroup, QStyle, QMenu,
-    QDialog, QScrollArea
+    QDialog, QScrollArea, QComboBox, QGroupBox, QCheckBox,
+    QGraphicsOpacityEffect
 )
 from PySide2.QtOpenGL import QGLWidget
 from PySide2.QtCore import Qt, Slot, QSize, QTimer
-from PySide2.QtGui import QIcon, QFont, QPalette, QColor, QKeySequence
+from PySide2.QtGui import QIcon, QFont, QPalette, QColor, QKeySequence, QImage, QPixmap, QPainter
 from PySide2.QtWidgets import QShortcut
 from shiboken2 import wrapInstance
 
 from .annotations import AnnotationOverlay, LayerPanelWidget
 from .fast_annotations import FASTAnnotationManager, CoordinateConverter
+from .image_processing import (
+    ColormapManager, ColormapType, ImageFilterProcessor, FilterType,
+    COLORMAP_DISPLAY_NAMES, FILTER_DISPLAY_NAMES,
+    create_colormap_processor, create_filter_processor, create_frame_tap_processor
+)
 
 
 class FileListWidget(QWidget):
     """Left panel with file list and controls."""
+
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -411,6 +419,151 @@ class ToolbarWidget(QToolBar):
         
         self.addSeparator()
         
+        # ===== Image Processing Tools =====
+        # Colormap dropdown
+        self.colormap_button = QToolButton(self)
+        self.colormap_button.setText(" LUT")  # palette icon
+        self.colormap_button.setFont(QFont("lucide", 11))
+        self.colormap_button.setToolTip("Color mapping (LUT)")
+        self.colormap_button.setPopupMode(QToolButton.MenuButtonPopup)
+        self.colormap_button.setStyleSheet("""
+            QToolButton {
+                padding-right: 20px;
+            }
+            QToolButton::menu-button {
+                width: 20px;
+            }
+        """)
+        
+        # Create colormap menu
+        self.colormap_menu = QMenu(self)
+        self.colormap_menu.setStyleSheet("""
+            QMenu {
+                background-color: #2d2d30;
+                color: #ffffff;
+                border: 1px solid #3e3e42;
+                border-radius: 4px;
+                padding: 2px;
+            }
+            QMenu::item {
+                padding: 6px 10px;
+                margin: 0px;
+                border-radius: 3px;
+            }
+            QMenu::item:selected {
+                background-color: #0078d4;
+            }
+            QMenu::item:checked {
+                background-color: #005a9e;
+            }
+        """)
+        
+        # Add colormap options
+        self.colormap_group = QActionGroup(self)
+        self.colormap_group.setExclusive(True)
+        
+        self.colormap_actions = {}
+        colormap_icons = {
+            'grayscale': '⬜',
+            'hot': '🔥',
+            'cool': '❄️',
+            'bone': '🦴',
+            'viridis': '🌈',
+            'plasma': '💜',
+            'inferno': '🌋',
+        }
+        for cmap in ColormapType:
+            display_name = COLORMAP_DISPLAY_NAMES.get(cmap, cmap.value)
+            icon = colormap_icons.get(cmap.value, '')
+            action = self.colormap_menu.addAction(f"{icon} {display_name}")
+            action.setCheckable(True)
+            action.setData(cmap)
+            self.colormap_group.addAction(action)
+            self.colormap_actions[cmap] = action
+            if cmap == ColormapType.GRAYSCALE:
+                action.setChecked(True)
+        
+        self.colormap_button.setMenu(self.colormap_menu)
+        self.addWidget(self.colormap_button)
+        
+        # Filter dropdown
+        self.filter_button = QToolButton(self)
+        self.filter_button.setText(" Filter")  # sparkles/wand icon
+        self.filter_button.setFont(QFont("lucide", 11))
+        self.filter_button.setToolTip("Image filters")
+        self.filter_button.setPopupMode(QToolButton.MenuButtonPopup)
+        self.filter_button.setStyleSheet("""
+            QToolButton {
+                padding-right: 20px;
+            }
+            QToolButton::menu-button {
+                width: 20px;
+            }
+        """)
+        
+        # Create filter menu
+        self.filter_menu = QMenu(self)
+        self.filter_menu.setStyleSheet("""
+            QMenu {
+                background-color: #2d2d30;
+                color: #ffffff;
+                border: 1px solid #3e3e42;
+                border-radius: 4px;
+                padding: 2px;
+            }
+            QMenu::item {
+                padding: 6px 10px;
+                margin: 0px;
+                border-radius: 3px;
+            }
+            QMenu::item:selected {
+                background-color: #0078d4;
+            }
+            QMenu::item:checked {
+                background-color: #005a9e;
+            }
+            QMenu::separator {
+                height: 1px;
+                background-color: #606060;
+                margin: 4px 8px;
+            }
+        """)
+        
+        # Add filter options
+        self.filter_group = QActionGroup(self)
+        self.filter_group.setExclusive(True)
+        
+        self.filter_actions = {}
+        filter_icons = {
+            'none': '○',
+            'gaussian': '◉',
+            'median': '◈',
+            'sharpen': '✦',
+            'edge_enhance': '◇',
+            'speckle_reduce': '◎',
+        }
+        for ftype in FilterType:
+            display_name = FILTER_DISPLAY_NAMES.get(ftype, ftype.value)
+            icon = filter_icons.get(ftype.value, '')
+            action = self.filter_menu.addAction(f"{icon} {display_name}")
+            action.setCheckable(True)
+            action.setData(ftype)
+            self.filter_group.addAction(action)
+            self.filter_actions[ftype] = action
+            if ftype == FilterType.NONE:
+                action.setChecked(True)
+        
+        self.filter_menu.addSeparator()
+        
+        # Filter strength slider (submenu-style)
+        self.filter_strength_action = self.filter_menu.addAction("▸ Strength: 50%")
+        self.filter_strength_action.setEnabled(False)  # Just a label
+        
+        self.filter_button.setMenu(self.filter_menu)
+        self.addWidget(self.filter_button)
+        
+        self.addSeparator()
+        
         # Screenshot
         self.screenshot_action = QToolButton(self)
         self.screenshot_action.setText(" Screenshot")
@@ -433,6 +586,131 @@ class ToolbarWidget(QToolBar):
         self.layers_toggle_action.setFont(QFont("lucide", 11))
         self.layers_toggle_action.setToolTip("Toggle Layers Panel")
         self.addWidget(self.layers_toggle_action)
+
+
+class FilterStrengthDialog(QDialog):
+    """Dialog for adjusting filter strength."""
+    
+    def __init__(self, initial_strength=0.5, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Filter Strength")
+        self.setFixedSize(300, 150)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
+        self._strength = initial_strength
+        self.setup_ui()
+    
+    def setup_ui(self):
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #2d2d30;
+                border: 1px solid #3e3e42;
+                border-radius: 8px;
+            }
+            QLabel {
+                color: #cccccc;
+                font-size: 12px;
+            }
+            QSlider::groove:horizontal {
+                border: 1px solid #3e3e42;
+                height: 8px;
+                background: #1e1e1e;
+                margin: 2px 0;
+                border-radius: 4px;
+            }
+            QSlider::handle:horizontal {
+                background: #0078d4;
+                border: 1px solid #005a9e;
+                width: 18px;
+                margin: -5px 0;
+                border-radius: 9px;
+            }
+            QSlider::handle:horizontal:hover {
+                background: #1e90ff;
+            }
+            QPushButton {
+                background-color: #0078d4;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #1e90ff;
+            }
+            QPushButton:pressed {
+                background-color: #005a9e;
+            }
+        """)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 15, 20, 15)
+        layout.setSpacing(15)
+        
+        # Title
+        title = QLabel("Adjust Filter Strength")
+        title.setFont(QFont("Helvetica Neue", 14, QFont.Bold))
+        title.setStyleSheet("color: #ffffff;")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+        
+        # Slider with labels
+        slider_row = QHBoxLayout()
+        
+        weak_label = QLabel("Weak")
+        weak_label.setStyleSheet("color: #888888; font-size: 11px;")
+        slider_row.addWidget(weak_label)
+        
+        self.strength_slider = QSlider(Qt.Horizontal)
+        self.strength_slider.setMinimum(0)
+        self.strength_slider.setMaximum(100)
+        self.strength_slider.setValue(int(self._strength * 100))
+        self.strength_slider.valueChanged.connect(self.on_slider_changed)
+        slider_row.addWidget(self.strength_slider, 1)
+        
+        strong_label = QLabel("Strong")
+        strong_label.setStyleSheet("color: #888888; font-size: 11px;")
+        slider_row.addWidget(strong_label)
+        
+        layout.addLayout(slider_row)
+        
+        # Value label
+        self.value_label = QLabel(f"{int(self._strength * 100)}%")
+        self.value_label.setAlignment(Qt.AlignCenter)
+        self.value_label.setFont(QFont("SF Mono", 16, QFont.Bold))
+        self.value_label.setStyleSheet("color: #0078d4;")
+        layout.addWidget(self.value_label)
+        
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        
+        ok_btn = QPushButton("Apply")
+        ok_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(ok_btn)
+        
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3e3e42;
+            }
+            QPushButton:hover {
+                background-color: #505050;
+            }
+        """)
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
+        
+        layout.addLayout(btn_layout)
+    
+    def on_slider_changed(self, value):
+        """Update label when slider changes."""
+        self._strength = value / 100.0
+        self.value_label.setText(f"{value}%")
+    
+    def get_strength(self) -> float:
+        """Get the selected strength value (0.0 to 1.0)."""
+        return self._strength
 
 
 class ShortcutsDialog(QDialog):
@@ -515,6 +793,10 @@ class ShortcutsDialog(QDialog):
                 ("A", "標註工具"),
                 ("1 / 2 / 3", "線段 / 矩形 / 多邊形"),
                 ("Esc", "取消當前操作"),
+            ],
+            "影像處理": [
+                ("C", "色彩映射選單"),
+                ("F", "濾波器選單"),
             ],
             "檔案": [
                 ("Cmd+O", "開啟檔案"),
@@ -798,6 +1080,28 @@ class UltrasoundViewerWindow(QMainWindow):
         self._wl_dragging = False
         self._wl_start_pos = None
         
+        # Image processing state
+        self.colormap_manager = ColormapManager()
+        self.filter_processor = ImageFilterProcessor()
+        self.current_colormap = ColormapType.GRAYSCALE
+        self.current_filter = FilterType.NONE
+        self.filter_strength = 0.5
+
+        # LUT overlay state (CPU colormap on top of grayscale FAST view)
+        self.lut_overlay_label = None
+        self.lut_overlay_effect = None
+        self.lut_overlay_enabled = False
+        self.lut_overlay_opacity = 0.85
+        self.lut_overlay_processor = None
+        self._lut_last_frame_id = -1
+        self._lut_last_view_matrix = None
+        self.debug_lut_transform = False # For debugging FAST / LUT alignment (True 會打印)
+        
+        # FAST pipeline processors (will be initialized in setup_pipeline)
+        self.pipeline_colormap_processor = None
+        self.pipeline_filter_processor = None
+        self.pipeline_frame_tap_processor = None
+        
         self.setup_ui()
         self.apply_dark_theme()
         self.connect_signals()
@@ -807,6 +1111,11 @@ class UltrasoundViewerWindow(QMainWindow):
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self.update_frame_info)
         self.update_timer.start(100)  # Update every 100ms
+
+        # Timer for LUT overlay updates
+        self.lut_overlay_timer = QTimer(self)
+        self.lut_overlay_timer.timeout.connect(self._update_lut_overlay)
+        self.lut_overlay_timer.start(33)
         
     def setup_ui(self):
         self.setWindowTitle("🔷 Ultrasound Imaging Software")
@@ -854,11 +1163,23 @@ class UltrasoundViewerWindow(QMainWindow):
             container_layout = QVBoxLayout(stack_container)
             container_layout.setContentsMargins(0, 0, 0, 0)
             container_layout.addWidget(self.fast_widget)
-            
+
+            # LUT overlay label (drawn on top of FAST widget)
+            self.lut_overlay_label = QLabel(self.fast_widget)
+            self.lut_overlay_label.setGeometry(0, 0, self.fast_widget.width(), self.fast_widget.height())
+            self.lut_overlay_label.setAlignment(Qt.AlignCenter)
+            self.lut_overlay_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            self.lut_overlay_label.setStyleSheet("background: transparent;")
+            self.lut_overlay_effect = QGraphicsOpacityEffect(self.lut_overlay_label)
+            self.lut_overlay_effect.setOpacity(self.lut_overlay_opacity)
+            self.lut_overlay_label.setGraphicsEffect(self.lut_overlay_effect)
+            self.lut_overlay_label.hide()
+
             # Add annotation overlay as child of fast_widget (not stack_container)
             # This ensures proper event propagation to the OpenGL widget
             self.annotation_overlay = AnnotationOverlay(self.fast_widget)
             self.annotation_overlay.setGeometry(0, 0, self.fast_widget.width(), self.fast_widget.height())
+            self.annotation_overlay.raise_()
             
             # Connect coord_converter to annotation_overlay for text rendering
             if self.fast_annotation_manager:
@@ -879,6 +1200,10 @@ class UltrasoundViewerWindow(QMainWindow):
                         self.fast_annotation_manager.coord_converter.set_widget_size(
                             self.fast_widget.width(), self.fast_widget.height()
                         )
+                if self.lut_overlay_label and self.fast_widget:
+                    self.lut_overlay_label.setGeometry(0, 0,
+                        self.fast_widget.width(), self.fast_widget.height())
+                    self._lut_last_frame_id = -1
             
             def on_resize(event):
                 update_overlay_size()
@@ -1031,6 +1356,14 @@ class UltrasoundViewerWindow(QMainWindow):
         
         # Settings -> show shortcuts
         self.toolbar.settings_action.clicked.connect(self.show_shortcuts_dialog)
+        
+        # Image processing - Colormap
+        self.toolbar.colormap_group.triggered.connect(self.on_colormap_changed)
+        self.toolbar.colormap_button.clicked.connect(self.show_colormap_menu)
+        
+        # Image processing - Filters
+        self.toolbar.filter_group.triggered.connect(self.on_filter_changed)
+        self.toolbar.filter_button.clicked.connect(self.show_filter_strength_dialog)
     
     @Slot()
     def open_file_dialog(self):
@@ -1179,10 +1512,30 @@ class UltrasoundViewerWindow(QMainWindow):
             # Create computation thread
             self.computation_thread = fast.ComputationThread.create()
             self.computation_thread.addView(self.fast_view)
+
+            self.pipeline_colormap_processor = None
+            self.pipeline_filter_processor = None
+            self.pipeline_frame_tap_processor = None
             
-            # Create renderer
+            # Build processing pipeline:
+            # Streamer -> FilterProcessor -> FrameTapProcessor -> Renderer
+            
+            # Create filter processor
+            FilterProcessorClass = create_filter_processor()
+            self.pipeline_filter_processor = FilterProcessorClass.create()
+            self.pipeline_filter_processor.connect(self.current_streamer)
+            self.pipeline_filter_processor.setFilter(self.current_filter, self.filter_strength)
+
+            # Create frame tap processor (grayscale passthrough + capture)
+            FrameTapProcessorClass = create_frame_tap_processor()
+            self.pipeline_frame_tap_processor = FrameTapProcessorClass.create()
+            self.pipeline_frame_tap_processor.connect(self.pipeline_filter_processor)
+            self.lut_overlay_processor = self.pipeline_frame_tap_processor
+            self._lut_last_frame_id = -1
+            
+            # Create renderer and connect to filter processor output
             self.renderer = fast.ImageRenderer.create()
-            self.renderer.connect(self.current_streamer)
+            self.renderer.connect(self.pipeline_frame_tap_processor)
             self.renderer.setIntensityLevel(self.intensity_level)
             self.renderer.setIntensityWindow(self.intensity_window)
             
@@ -1206,8 +1559,232 @@ class UltrasoundViewerWindow(QMainWindow):
             self._center_timer.timeout.connect(self._check_and_center)
             self._center_timer.start(50)  # Check every 50ms
             
+            self._set_lut_overlay_enabled(self.current_colormap != ColormapType.GRAYSCALE)
+            print(f"Pipeline setup: Colormap={self.current_colormap.name}, Filter={self.current_filter.name}")
+            
         except Exception as e:
             print(f"Error setting up pipeline: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _set_lut_overlay_enabled(self, enabled: bool):
+        self.lut_overlay_enabled = enabled
+        if self.lut_overlay_label:
+            self.lut_overlay_label.setVisible(enabled)
+            if not enabled:
+                self.lut_overlay_label.clear()
+        if self.annotation_overlay:
+            self.annotation_overlay.raise_()
+        self._lut_last_frame_id = -1
+        self._lut_last_view_matrix = None
+
+    def _update_lut_overlay(self):
+        if not self.lut_overlay_enabled:
+            return
+        if not self.lut_overlay_processor or not self.lut_overlay_label:
+            return
+
+        frame, frame_id = self.lut_overlay_processor.getLatestFrame(copy=False)
+        if frame is None:
+            return
+
+        view_matrix = None
+        ortho_params = None
+        perspective_matrix = None
+        if self.fast_view:
+            try:
+                view_matrix = self.fast_view.getViewMatrix()
+            except Exception:
+                view_matrix = None
+            try:
+                ortho_params = self.fast_view.getOrthoProjectionParameters()
+            except Exception:
+                ortho_params = None
+            try:
+                perspective_matrix = self.fast_view.getPerspectiveMatrix()
+            except Exception:
+                perspective_matrix = None
+
+        view_key = None
+        if view_matrix and (ortho_params or perspective_matrix):
+            try:
+                view_key = tuple(round(v, 6) for row in view_matrix for v in row)
+                if ortho_params:
+                    view_key += tuple(round(v, 6) for v in ortho_params)
+                if perspective_matrix:
+                    view_key += tuple(round(v, 6) for row in perspective_matrix for v in row)
+            except Exception:
+                view_key = None
+
+        if frame_id == self._lut_last_frame_id and view_key == self._lut_last_view_matrix:
+            return
+
+        self._lut_last_frame_id = frame_id
+        self._lut_last_view_matrix = view_key
+
+        rgb = self.colormap_manager.apply_colormap(frame, self.current_colormap)
+        if rgb.dtype != np.uint8:
+            rgb = np.clip(rgb, 0, 255).astype(np.uint8)
+
+        if rgb.ndim != 3 or rgb.shape[2] != 3:
+            return
+
+        height, width, _ = rgb.shape
+        bytes_per_line = 3 * width
+        qimage = QImage(rgb.data, width, height, bytes_per_line, QImage.Format_RGB888).copy()
+        base_pixmap = QPixmap.fromImage(qimage)
+
+        target_size = self.lut_overlay_label.size()
+        if target_size.isEmpty():
+            self.lut_overlay_label.setPixmap(base_pixmap)
+            return
+
+        canvas = QPixmap(target_size)
+        canvas.fill(Qt.transparent)
+
+        def _draw_with_fit():
+            scaled = base_pixmap.scaled(target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            painter = QPainter(canvas)
+            painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            x = (target_size.width() - scaled.width()) // 2
+            y = (target_size.height() - scaled.height()) // 2
+            painter.drawPixmap(x, y, scaled)
+            painter.end()
+
+        if not view_matrix or (not ortho_params and not perspective_matrix):
+            _draw_with_fit()
+            self.lut_overlay_label.setPixmap(canvas)
+            return
+
+        try:
+            if ortho_params and len(ortho_params) == 6:
+                l, r, b, t, n, f = ortho_params
+                if r == l or t == b or f == n:
+                    _draw_with_fit()
+                    self.lut_overlay_label.setPixmap(canvas)
+                    return
+
+                proj = np.array([
+                    [2.0 / (r - l), 0.0, 0.0, -(r + l) / (r - l)],
+                    [0.0, 2.0 / (t - b), 0.0, -(t + b) / (t - b)],
+                    [0.0, 0.0, -2.0 / (f - n), -(f + n) / (f - n)],
+                    [0.0, 0.0, 0.0, 1.0],
+                ], dtype=np.float64)
+            elif ortho_params and len(ortho_params) == 16:
+                proj = np.array(ortho_params, dtype=np.float64).reshape(4, 4)
+            elif perspective_matrix:
+                proj = np.array(perspective_matrix, dtype=np.float64)
+                if proj.shape != (4, 4):
+                    proj = proj.reshape(4, 4)
+            else:
+                _draw_with_fit()
+                self.lut_overlay_label.setPixmap(canvas)
+                return
+
+            view = np.array(view_matrix, dtype=np.float64)
+
+            def world_to_ndc(x, y):
+                p = np.array([x, y, 0.0, 1.0], dtype=np.float64)
+                clip = proj @ (view @ p)
+                if clip[3] == 0:
+                    return None
+                return (clip[0] / clip[3], clip[1] / clip[3])
+
+            info = self.lut_overlay_processor.getLatestImageInfo()
+            size = info.get("size") if info else None
+            spacing = info.get("spacing") if info else None
+            transform_matrix = info.get("transform_matrix") if info else None
+
+            if not size or not spacing:
+                size = (width, height, 1.0)
+                spacing = (1.0, 1.0, 1.0)
+
+            sx, sy = float(size[0]), float(size[1])
+            spx, spy = float(spacing[0]), float(spacing[1])
+            phys_w = sx * spx
+            phys_h = sy * spy
+
+            if transform_matrix is None:
+                transform_matrix = [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ]
+
+            transform = np.array(transform_matrix, dtype=np.float64)
+
+            def image_to_world(x, y):
+                p = np.array([x, y, 0.0, 1.0], dtype=np.float64)
+                w = transform @ p
+                return (w[0], w[1])
+
+            p00 = image_to_world(0.0, 0.0)
+            p10 = image_to_world(phys_w, 0.0)
+            p01 = image_to_world(0.0, phys_h)
+            p11 = image_to_world(phys_w, phys_h)
+
+            points = [
+                world_to_ndc(p00[0], p00[1]),
+                world_to_ndc(p10[0], p10[1]),
+                world_to_ndc(p01[0], p01[1]),
+                world_to_ndc(p11[0], p11[1]),
+            ]
+
+            if any(p is None for p in points):
+                _draw_with_fit()
+                self.lut_overlay_label.setPixmap(canvas)
+                return
+
+            w = target_size.width()
+            h = target_size.height()
+            screen_points = [
+                ((x * 0.5 + 0.5) * w, (1 - (y * 0.5 + 0.5)) * h)
+                for x, y in points
+            ]
+
+            xs = [p[0] for p in screen_points]
+            ys = [p[1] for p in screen_points]
+            min_x, max_x = min(xs), max(xs)
+            min_y, max_y = min(ys), max(ys)
+
+            box_w = max_x - min_x
+            box_h = max_y - min_y
+
+            if box_w <= 1 or box_h <= 1:
+                _draw_with_fit()
+                self.lut_overlay_label.setPixmap(canvas)
+                return
+
+            scaled = base_pixmap.scaled(int(box_w), int(box_h), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            painter = QPainter(canvas)
+            painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            painter.drawPixmap(int(min_x), int(min_y), scaled)
+            painter.end()
+
+            if self.debug_lut_transform:
+                try:
+                    image_px_w = max(1.0, float(width))
+                    image_px_h = max(1.0, float(height))
+                    fast_scale_x = box_w / image_px_w
+                    fast_scale_y = box_h / image_px_h
+                    lut_scale_x = scaled.width() / image_px_w
+                    lut_scale_y = scaled.height() / image_px_h
+                    print(
+                        "[LUT DEBUG] "
+                        f"FAST bbox(px)=({min_x:.1f},{min_y:.1f},{max_x:.1f},{max_y:.1f}) "
+                        f"FAST scale(px/px)=({fast_scale_x:.2f},{fast_scale_y:.2f}) "
+                        f"LUT bbox(px)=({min_x:.1f},{min_y:.1f},{(min_x + box_w):.1f},{(min_y + box_h):.1f}) "
+                        f"LUT scale(px/px)=({lut_scale_x:.2f},{lut_scale_y:.2f})"
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            _draw_with_fit()
+
+        self.lut_overlay_label.setPixmap(canvas)
+        if self.annotation_overlay:
+            self.annotation_overlay.raise_()
     
     def _check_and_center(self):
         """Poll to check if first frame is rendered, then center the image."""
@@ -1660,12 +2237,97 @@ class UltrasoundViewerWindow(QMainWindow):
         # Panel shortcuts
         self.shortcut_layers = QShortcut(QKeySequence("P"), self)
         self.shortcut_layers.activated.connect(self.toggle_layers_panel)
+        
+        # Image processing shortcuts
+        self.shortcut_colormap = QShortcut(QKeySequence("C"), self)
+        self.shortcut_colormap.activated.connect(lambda: self.toolbar.colormap_button.showMenu())
+        
+        self.shortcut_filter = QShortcut(QKeySequence("F"), self)
+        self.shortcut_filter.activated.connect(lambda: self.toolbar.filter_button.showMenu())
     
     def show_shortcuts_dialog(self):
         """Show keyboard shortcuts dialog."""
         dialog = ShortcutsDialog(self)
         dialog.exec_()
     
+    # ==================== Image Processing Methods ====================
+    
+    def on_colormap_changed(self, action):
+        """Handle colormap selection change."""
+        colormap_type = action.data()
+        if colormap_type:
+            self.current_colormap = colormap_type
+            self.colormap_manager.set_current_colormap(colormap_type)
+            
+            # Enable/disable LUT overlay based on colormap selection
+            self._set_lut_overlay_enabled(colormap_type != ColormapType.GRAYSCALE)
+            
+            self.apply_image_processing()
+            
+            display_name = COLORMAP_DISPLAY_NAMES.get(colormap_type, colormap_type.value)
+            self.status_bar.showMessage(f"Colormap: {display_name}", 3000)
+    
+    def show_colormap_menu(self):
+        """Show colormap menu when button is clicked."""
+        # Menu already attached, just let it pop up
+        pass
+    
+    def on_filter_changed(self, action):
+        """Handle filter selection change."""
+        filter_type = action.data()
+        if filter_type:
+            self.current_filter = filter_type
+            self.filter_processor.current_filter = filter_type
+            
+            # Update the pipeline processor if it exists
+            if self.pipeline_filter_processor:
+                self.pipeline_filter_processor.setFilter(filter_type, self.filter_strength)
+            
+            self.apply_image_processing()
+            
+            display_name = FILTER_DISPLAY_NAMES.get(filter_type, filter_type.value)
+            self.status_bar.showMessage(f"Filter: {display_name}", 3000)
+    
+    def show_filter_strength_dialog(self):
+        """Show dialog to adjust filter strength."""
+        dialog = FilterStrengthDialog(self.filter_strength, self)
+        if dialog.exec_() == QDialog.Accepted:
+            self.filter_strength = dialog.get_strength()
+            self.filter_processor.filter_strength = self.filter_strength
+            
+            # Update the pipeline processor if it exists
+            if self.pipeline_filter_processor:
+                self.pipeline_filter_processor.setFilter(self.current_filter, self.filter_strength)
+            
+            # Update menu label
+            self.toolbar.filter_strength_action.setText(f"▸ Strength: {int(self.filter_strength * 100)}%")
+            self.apply_image_processing()
+            self.status_bar.showMessage(f"Filter strength: {int(self.filter_strength * 100)}%", 3000)
+    
+    def apply_image_processing(self):
+        """Apply current image processing settings to the renderer.
+        
+        With PythonProcessObject-based processors in the pipeline,
+        filter changes are applied in real-time.
+        """
+        if not self.renderer:
+            return
+        
+        # The actual processing is done by the pipeline processors
+        # (FilterProcessor and FrameTapProcessor) which are already
+        # connected in setup_pipeline()
+        self._lut_last_frame_id = -1
+        
+        # Log current settings
+        colormap_name = self.current_colormap.value
+        filter_name = self.current_filter.value
+        
+        if self.current_colormap != ColormapType.GRAYSCALE:
+            print(f"Image processing active: Colormap={colormap_name}")
+        
+        if self.current_filter != FilterType.NONE:
+            print(f"Image processing active: Filter={filter_name} ({int(self.filter_strength * 100)}%)")
+
     def closeEvent(self, event):
         """Handle window close."""
         if self.computation_thread:

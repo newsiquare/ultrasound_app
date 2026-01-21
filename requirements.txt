@@ -7,3 +7,4 @@ pylibjpeg
 pylibjpeg-libjpeg
 pylibjpeg-openjpeg
 pyside2==5.15.2.1
+scipy

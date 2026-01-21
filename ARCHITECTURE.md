@@ -97,6 +97,41 @@ Annotation (基類)
 
 ---
 
+### 2.5 `src/image_processing.py` — 影像處理模組 (v2.0 新增)
+
+**色彩映射管理器：**
+
+| 類別 | 說明 |
+|------|------|
+| `ColormapManager` | 管理 LUT 查找表，支援多種色彩映射 |
+| `ColormapType` | 支援的色彩映射類型枚舉 |
+
+**支援的色彩映射：**
+- `GRAYSCALE` - 標準灰階
+- `HOT` - 熱力圖 (黑→紅→黃→白)
+- `COOL` - 冷色調 (青→洋紅)
+- `BONE` - 骨骼 (醫學影像常用)
+- `VIRIDIS` - 色盲友善
+- `PLASMA` - 等離子
+- `INFERNO` - 地獄火
+
+**濾波器處理器：**
+
+| 類別 | 說明 |
+|------|------|
+| `ImageFilterProcessor` | 影像濾波器處理 |
+| `FilterType` | 支援的濾波器類型枚舉 |
+
+**支援的濾波器：**
+- `NONE` - 無濾波
+- `GAUSSIAN` - 高斯模糊 (平滑)
+- `MEDIAN` - 中值濾波 (椒鹽雜訊)
+- `SHARPEN` - 銳化 (Unsharp Mask)
+- `EDGE_ENHANCE` - 邊緣增強 (Laplacian)
+- `SPECKLE_REDUCE` - 斑點降噪 (Lee Filter)
+
+---
+
 ## 3. 關鍵功能流程
 
 ### 3.1 載入 DICOM 檔案
