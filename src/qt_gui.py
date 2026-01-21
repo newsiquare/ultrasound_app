@@ -790,6 +790,12 @@ class ShortcutsDialog(QDialog):
                 ("右鍵拖曳", "平移"),
                 ("R", "重置檢視"),
             ],
+            "佈局切換": [
+                ("Ctrl+1", "單視窗 (1×1)"),
+                ("Ctrl+2", "左右雙視窗 (1×2)"),
+                ("Ctrl+3", "上下雙視窗 (2×1)"),
+                ("Ctrl+4", "四視窗 (2×2)"),
+            ],
             "工具": [
                 ("W", "Window/Level 調整"),
                 ("A", "標註工具"),
@@ -1202,6 +1208,7 @@ class UltrasoundViewerWindow(QMainWindow):
             self.lut_overlay_label = vp.lut_overlay_label
             self.lut_overlay_effect = vp.lut_overlay_effect
             self.lut_overlay_processor = vp.lut_overlay_processor
+            self.renderer = vp.renderer  # Required for W/L adjustment
             
             # Setup annotation overlay connections
             if self.annotation_overlay:
