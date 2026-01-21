@@ -46,6 +46,8 @@ from .image_processing import (
     COLORMAP_DISPLAY_NAMES, FILTER_DISPLAY_NAMES,
     create_colormap_processor, create_filter_processor, create_frame_tap_processor
 )
+from .loaders import DicomLoadWorker, DicomLoadResult, VideoLoadWorker, LoadProgressDialog
+from .viewport import Viewport, ViewportManager, LayoutButtonWidget
 
 
 class FileListWidget(QWidget):
@@ -1074,6 +1076,10 @@ class UltrasoundViewerWindow(QMainWindow):
         # FAST Annotation Manager (will be initialized after fast_view is created)
         self.fast_annotation_manager = None
         
+        # Async loading state
+        self._load_worker = None
+        self._load_progress_dialog = None
+        
         # Window/Level state
         self.intensity_level = 127.0
         self.intensity_window = 255.0
@@ -1148,85 +1154,11 @@ class UltrasoundViewerWindow(QMainWindow):
         self.toolbar = ToolbarWidget()
         right_layout.addWidget(self.toolbar)
         
-        # FAST View container with annotation overlay
-        self.view_container = QFrame()
-        self.view_container.setStyleSheet("background-color: #1e1e1e;")
-        self.view_container.setFrameShape(QFrame.NoFrame)
-        view_layout = QVBoxLayout(self.view_container)
-        view_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # Create FAST view
-        self.create_fast_view()
-        if self.fast_widget:
-            # Create container for FAST widget and overlay
-            stack_container = QWidget()
-            container_layout = QVBoxLayout(stack_container)
-            container_layout.setContentsMargins(0, 0, 0, 0)
-            container_layout.addWidget(self.fast_widget)
-
-            # LUT overlay label (drawn on top of FAST widget)
-            self.lut_overlay_label = QLabel(self.fast_widget)
-            self.lut_overlay_label.setGeometry(0, 0, self.fast_widget.width(), self.fast_widget.height())
-            self.lut_overlay_label.setAlignment(Qt.AlignCenter)
-            self.lut_overlay_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-            self.lut_overlay_label.setStyleSheet("background: transparent;")
-            self.lut_overlay_effect = QGraphicsOpacityEffect(self.lut_overlay_label)
-            self.lut_overlay_effect.setOpacity(self.lut_overlay_opacity)
-            self.lut_overlay_label.setGraphicsEffect(self.lut_overlay_effect)
-            self.lut_overlay_label.hide()
-
-            # Add annotation overlay as child of fast_widget (not stack_container)
-            # This ensures proper event propagation to the OpenGL widget
-            self.annotation_overlay = AnnotationOverlay(self.fast_widget)
-            self.annotation_overlay.setGeometry(0, 0, self.fast_widget.width(), self.fast_widget.height())
-            self.annotation_overlay.raise_()
-            
-            # Connect coord_converter to annotation_overlay for text rendering
-            if self.fast_annotation_manager:
-                self.annotation_overlay.set_coord_converter(
-                    self.fast_annotation_manager.coord_converter
-                )
-            
-            # （1/2）安裝平移事件過濾器 (forward events to FAST view)
-            self.annotation_overlay.installEventFilter(self)
-
-            # Connect resize to update overlay size and reset camera
-            def update_overlay_size():
-                if self.annotation_overlay and self.fast_widget:
-                    self.annotation_overlay.setGeometry(0, 0, 
-                        self.fast_widget.width(), self.fast_widget.height())
-                    # Update coordinate converter with new widget size
-                    if self.fast_annotation_manager:
-                        self.fast_annotation_manager.coord_converter.set_widget_size(
-                            self.fast_widget.width(), self.fast_widget.height()
-                        )
-                if self.lut_overlay_label and self.fast_widget:
-                    self.lut_overlay_label.setGeometry(0, 0,
-                        self.fast_widget.width(), self.fast_widget.height())
-                    self._lut_last_frame_id = -1
-            
-            def on_resize(event):
-                update_overlay_size()
-                # Direct API call for instant camera recalculation
-                if self.fast_view and self.current_streamer:
-                    try:
-                        self.fast_view.recalculateCamera() # 重新計算相機位置，根據場景邊界框自動調整
-                    except:
-                        pass
-            
-            stack_container.resizeEvent = on_resize
-            
-            view_layout.addWidget(stack_container)
-        else:
-            # Placeholder if FAST view fails
-            placeholder = QLabel("No image loaded\n\nClick 'Open File...' to load a DICOM file")
-            placeholder.setAlignment(Qt.AlignCenter)
-            placeholder.setStyleSheet("color: #888888; font-size: 14px;")
-            self.placeholder_label = placeholder
-            self.annotation_overlay = None
-            view_layout.addWidget(placeholder)
-        
-        right_layout.addWidget(self.view_container, 1)
+        # ViewportManager (replaces single FAST view)
+        self.viewport_manager = ViewportManager()
+        self.viewport_manager.active_viewport_changed.connect(self._on_active_viewport_changed)
+        self.viewport_manager.layout_changed.connect(self._on_layout_changed)
+        right_layout.addWidget(self.viewport_manager, 1)
         
         # Playback controls
         self.playback = PlaybackControlWidget()
@@ -1238,6 +1170,9 @@ class UltrasoundViewerWindow(QMainWindow):
         self.layer_panel = LayerPanelWidget()
         self.layer_panel.setStyleSheet("background-color: #252526;")
         splitter.addWidget(self.layer_panel)
+        
+        # Now sync viewport references (after layer_panel is created)
+        self._sync_viewport_references()
         
         # Save splitter reference for toggle
         self.main_splitter = splitter
@@ -1255,6 +1190,62 @@ class UltrasoundViewerWindow(QMainWindow):
         """)
         self.status_bar.showMessage("Ready")
         self.setStatusBar(self.status_bar)
+    
+    def _sync_viewport_references(self):
+        """Sync references from active viewport for backward compatibility."""
+        vp = self.viewport_manager.get_active_viewport()
+        if vp:
+            self.fast_view = vp.fast_view
+            self.fast_widget = vp.fast_widget
+            self.fast_annotation_manager = vp.fast_annotation_manager
+            self.annotation_overlay = vp.annotation_overlay
+            self.lut_overlay_label = vp.lut_overlay_label
+            self.lut_overlay_effect = vp.lut_overlay_effect
+            self.lut_overlay_processor = vp.lut_overlay_processor
+            
+            # Setup annotation overlay connections
+            if self.annotation_overlay:
+                self.annotation_overlay.installEventFilter(self)
+                if self.fast_annotation_manager:
+                    self.annotation_overlay.set_coord_converter(
+                        self.fast_annotation_manager.coord_converter
+                    )
+                
+                # Reconnect annotation signals (disconnect first to avoid duplicates)
+                try:
+                    self.annotation_overlay.annotation_added.disconnect()
+                    self.annotation_overlay.measure_added.disconnect()
+                    self.annotation_overlay.wl_changed.disconnect()
+                    self.annotation_overlay.preview_updated.disconnect()
+                    self.annotation_overlay.preview_cleared.disconnect()
+                except:
+                    pass
+                
+                self.annotation_overlay.annotation_added.connect(self.layer_panel.add_annotation)
+                self.annotation_overlay.annotation_added.connect(self.on_annotation_added)
+                self.annotation_overlay.measure_added.connect(self.on_measure_added)
+                self.annotation_overlay.wl_changed.connect(self.on_wl_changed)
+                self.annotation_overlay.preview_updated.connect(self.on_preview_updated)
+                self.annotation_overlay.preview_cleared.connect(self.on_preview_cleared)
+    
+    def _on_active_viewport_changed(self, viewport: Viewport):
+        """Handle active viewport change."""
+        self._sync_viewport_references()
+        
+        # Update current file reference
+        self.current_file = viewport.current_file
+        self.current_streamer = viewport.current_streamer
+        
+        # Update status bar
+        if viewport.current_file:
+            filename = os.path.basename(viewport.current_file)
+            self.status_bar.showMessage(f"Active: {filename}")
+        else:
+            self.status_bar.showMessage("Ready")
+    
+    def _on_layout_changed(self, layout_name: str):
+        """Handle layout change."""
+        self.status_bar.showMessage(f"Layout: {layout_name}")
     
     def create_fast_view(self):
         """Create and embed FAST view widget."""
@@ -1412,90 +1403,210 @@ class UltrasoundViewerWindow(QMainWindow):
             self.load_file(dcm_files[0])
     
     def load_file(self, filepath):
-        """Load an ultrasound file."""
+        """Load an ultrasound file using async loading."""
+        # Check if already loading
+        if self._load_worker and self._load_worker.isRunning():
+            QMessageBox.warning(self, "載入中", "請等待目前檔案載入完成")
+            return
+        
         self.status_bar.showMessage(f"Loading: {filepath}")
         
+        # Determine file type and create appropriate worker
+        is_dicom = filepath.lower().endswith('.dcm')
+        is_video = VideoLoadWorker.is_video_file(filepath)
+        
+        if is_dicom:
+            self._start_dicom_loading(filepath)
+        elif is_video:
+            self._start_video_loading(filepath)
+        else:
+            # Fall back to sync loading for other file types
+            self._load_file_sync(filepath)
+    
+    def _start_dicom_loading(self, filepath):
+        """Start async DICOM loading with progress dialog."""
+        # Create progress dialog
+        self._load_progress_dialog = LoadProgressDialog(self, "載入 DICOM")
+        self._load_progress_dialog.set_filename(os.path.basename(filepath))
+        
+        # Create worker thread
+        self._load_worker = DicomLoadWorker(filepath, loop=True, parent=self)
+        
+        # Connect signals
+        self._load_worker.progress.connect(self._load_progress_dialog.set_progress)
+        self._load_worker.stage_changed.connect(self._load_progress_dialog.set_stage)
+        self._load_worker.finished_loading.connect(self._on_dicom_load_complete)
+        self._load_worker.error_occurred.connect(self._on_load_error)
+        self._load_progress_dialog.cancelled.connect(self._on_load_cancelled)
+        
+        # Disable toolbar during loading
+        self.toolbar.setEnabled(False)
+        
+        # Start loading
+        self._load_worker.start()
+        self._load_progress_dialog.show()
+    
+    def _start_video_loading(self, filepath):
+        """Start async video loading."""
+        # Video loading is fast, use simpler approach
+        self.status_bar.showMessage(f"載入影片: {os.path.basename(filepath)}")
+        
+        self._load_worker = VideoLoadWorker(filepath, loop=True, parent=self)
+        self._load_worker.finished_loading.connect(self._on_video_load_complete)
+        self._load_worker.error_occurred.connect(self._on_load_error)
+        
+        self.toolbar.setEnabled(False)
+        self._load_worker.start()
+    
+    def _on_dicom_load_complete(self, result: DicomLoadResult):
+        """Handle DICOM loading completion."""
+        # Close progress dialog
+        if self._load_progress_dialog:
+            self._load_progress_dialog.close_on_complete()
+            self._load_progress_dialog = None
+        
+        # Re-enable toolbar
+        self.toolbar.setEnabled(True)
+        
+        if not result.success:
+            QMessageBox.critical(self, "載入失敗", result.error_message)
+            self.status_bar.showMessage("載入失敗")
+            return
+        
+        # Apply the loaded data
+        self._apply_dicom_result(result)
+    
+    def _on_video_load_complete(self, result):
+        """Handle video loading completion."""
+        self.toolbar.setEnabled(True)
+        
+        if not result.success:
+            QMessageBox.critical(self, "載入失敗", result.error_message)
+            self.status_bar.showMessage("載入失敗")
+            return
+        
+        # Load into active viewport
+        viewport = self.viewport_manager.get_active_viewport()
+        if viewport:
+            shared_thread = self.viewport_manager._shared_computation_thread
+            viewport.load_streamer(result.streamer, result.filepath, shared_thread=shared_thread)
+            self.viewport_manager.ensure_computation_thread_running()
+            self._sync_viewport_references()
+            self.current_streamer = viewport.current_streamer
+            self.current_file = viewport.current_file
+            
+            self.is_playing = True
+            self.playback.play_btn.setText("")
+        
+        self.file_panel.add_file(result.filepath)
+        self.file_panel.select_file(result.filepath)
+        
+        self.status_bar.showMessage(f"已載入: {os.path.basename(result.filepath)}")
+    
+    def _on_load_error(self, error_message: str):
+        """Handle loading error."""
+        if self._load_progress_dialog:
+            self._load_progress_dialog.close_on_cancel()
+            self._load_progress_dialog = None
+        
+        self.toolbar.setEnabled(True)
+        QMessageBox.critical(self, "載入錯誤", error_message)
+        self.status_bar.showMessage("載入錯誤")
+    
+    def _on_load_cancelled(self):
+        """Handle loading cancellation."""
+        if self._load_worker:
+            self._load_worker.cancel()
+            self._load_worker.wait(2000)  # Wait up to 2 seconds
+        
+        if self._load_progress_dialog:
+            self._load_progress_dialog.close_on_cancel()
+            self._load_progress_dialog = None
+        
+        self.toolbar.setEnabled(True)
+        self.status_bar.showMessage("載入已取消")
+    
+    def _apply_dicom_result(self, result: DicomLoadResult):
+        """Apply loaded DICOM data to the active viewport."""
+        from .annotations import Annotation, Measure
+        
+        # Set pixel spacing for annotations
+        Annotation.set_pixel_spacing(result.pixel_spacing)
+        Measure.set_pixel_spacing(result.pixel_spacing)
+        
+        # Update patient info panel
+        self.file_panel.update_patient_info(result.metadata)
+        
+        # Load into active viewport
+        viewport = self.viewport_manager.get_active_viewport()
+        if viewport:
+            shared_thread = self.viewport_manager._shared_computation_thread
+            viewport.load_streamer(
+                result.streamer,
+                result.filepath,
+                result.metadata,
+                result.pixel_spacing,
+                result.image_width,
+                result.image_height,
+                shared_thread=shared_thread
+            )
+            self.viewport_manager.ensure_computation_thread_running()
+            
+            # Sync references for compatibility
+            self._sync_viewport_references()
+            self.current_streamer = viewport.current_streamer
+            self.current_file = viewport.current_file
+            
+            # Update playback button state
+            self.is_playing = True
+            self.playback.play_btn.setText("")  # pause icon
+            
+            # Event-driven centering
+            self._center_attempts = 0
+            self._center_timer = QTimer(self)
+            self._center_timer.timeout.connect(self._check_and_center)
+            self._center_timer.start(50)
+            
+            # Set LUT overlay
+            self._set_lut_overlay_enabled(self.current_colormap != ColormapType.GRAYSCALE)
+        
+        # Add to file list
+        self.file_panel.add_file(result.filepath)
+        self.file_panel.select_file(result.filepath)
+        
+        self.status_bar.showMessage(f"已載入: {os.path.basename(result.filepath)}")
+        
+        if result.pixel_spacing:
+            print(f"Pixel spacing: {result.pixel_spacing:.4f} mm/pixel")
+        if result.image_width and result.image_height:
+            print(f"Image size: {result.image_width} x {result.image_height}")
+    
+    def _load_file_sync(self, filepath):
+        """Fallback synchronous loading for non-DICOM/video files."""
         try:
-            # Import pipeline function
             from .pipelines import create_playback_pipeline
-            from .annotations import Annotation, Measure
             
-            # Extract DICOM metadata for patient info panel
-            dicom_metadata = {}
-            pixel_spacing = None
-            image_width, image_height = 0, 0
-            if filepath.lower().endswith('.dcm'):
-                try:
-                    import pydicom
-                    ds = pydicom.dcmread(filepath, stop_before_pixels=True, force=True)
-                    dicom_metadata = {
-                        'PatientName': str(ds.get('PatientName', 'Anonymous')),
-                        'StudyDate': str(ds.get('StudyDate', '')),
-                        'Modality': str(ds.get('Modality', 'US')),
-                        'Manufacturer': str(ds.get('Manufacturer', '')),
-                        'InstitutionName': str(ds.get('InstitutionName', '')),
-                        'NumberOfFrames': str(ds.get('NumberOfFrames', 1)),
-                    }
-                    
-                    # Extract image dimensions
-                    if hasattr(ds, 'Columns') and hasattr(ds, 'Rows'):
-                        image_width = int(ds.Columns)
-                        image_height = int(ds.Rows)
-                    
-                    # Extract PixelSpacing for real measurements
-                    # Try standard PixelSpacing first
-                    if hasattr(ds, 'PixelSpacing') and ds.PixelSpacing:
-                        pixel_spacing = float(ds.PixelSpacing[0])  # mm/pixel
-                    # For ultrasound, try SequenceOfUltrasoundRegions
-                    elif hasattr(ds, 'SequenceOfUltrasoundRegions'):
-                        regions = ds.SequenceOfUltrasoundRegions
-                        if regions and len(regions) > 0:
-                            region = regions[0]
-                            if hasattr(region, 'PhysicalDeltaX'):
-                                # PhysicalDeltaX is in cm, convert to mm
-                                pixel_spacing = float(region.PhysicalDeltaX) * 10
-                    
-                    if pixel_spacing:
-                        print(f"Pixel spacing: {pixel_spacing:.4f} mm/pixel")
-                    if image_width and image_height:
-                        print(f"Image size: {image_width} x {image_height}")
-                except Exception as e:
-                    print(f"Could not read DICOM metadata: {e}")
+            streamer = create_playback_pipeline(filepath)
             
-            # Set pixel spacing for annotations and measurements
-            Annotation.set_pixel_spacing(pixel_spacing)
-            Measure.set_pixel_spacing(pixel_spacing)
-            
-            # Update FAST annotation manager with image info
-            if self.fast_annotation_manager and image_width > 0 and image_height > 0:
-                self.fast_annotation_manager.set_image_info(
-                    image_width, image_height, 
-                    pixel_spacing if pixel_spacing else 1.0
-                )
-                # Also set widget size for coordinate conversion
-                if self.fast_widget:
-                    self.fast_annotation_manager.coord_converter.set_widget_size(
-                        self.fast_widget.width(), self.fast_widget.height()
-                    )
-            
-            # Update patient info panel
-            self.file_panel.update_patient_info(dicom_metadata)
-            
-            # Create streamer
-            self.current_streamer = create_playback_pipeline(filepath)
-            
-            if self.current_streamer is None:
+            if streamer is None:
                 QMessageBox.critical(self, "Error", "Failed to load file")
                 return
             
-            # Add to file list and select
+            # Load into active viewport
+            viewport = self.viewport_manager.get_active_viewport()
+            if viewport:
+                shared_thread = self.viewport_manager._shared_computation_thread
+                viewport.load_streamer(streamer, filepath, shared_thread=shared_thread)
+                self.viewport_manager.ensure_computation_thread_running()
+                self._sync_viewport_references()
+                self.current_streamer = viewport.current_streamer
+                self.current_file = viewport.current_file
+                
+                self.is_playing = True
+                self.playback.play_btn.setText("")
+            
             self.file_panel.add_file(filepath)
             self.file_panel.select_file(filepath)
-            self.current_file = filepath
-            
-            # Setup FAST pipeline
-            if self.fast_view:
-                self.setup_pipeline()
             
             self.status_bar.showMessage(f"Loaded: {os.path.basename(filepath)}")
             
@@ -2244,6 +2355,19 @@ class UltrasoundViewerWindow(QMainWindow):
         
         self.shortcut_filter = QShortcut(QKeySequence("F"), self)
         self.shortcut_filter.activated.connect(lambda: self.toolbar.filter_button.showMenu())
+        
+        # Layout shortcuts (Ctrl+1/2/3/4)
+        self.shortcut_layout_1x1 = QShortcut(QKeySequence("Ctrl+1"), self)
+        self.shortcut_layout_1x1.activated.connect(lambda: self.viewport_manager.set_layout('1x1'))
+        
+        self.shortcut_layout_1x2 = QShortcut(QKeySequence("Ctrl+2"), self)
+        self.shortcut_layout_1x2.activated.connect(lambda: self.viewport_manager.set_layout('1x2'))
+        
+        self.shortcut_layout_2x1 = QShortcut(QKeySequence("Ctrl+3"), self)
+        self.shortcut_layout_2x1.activated.connect(lambda: self.viewport_manager.set_layout('2x1'))
+        
+        self.shortcut_layout_2x2 = QShortcut(QKeySequence("Ctrl+4"), self)
+        self.shortcut_layout_2x2.activated.connect(lambda: self.viewport_manager.set_layout('2x2'))
     
     def show_shortcuts_dialog(self):
         """Show keyboard shortcuts dialog."""
