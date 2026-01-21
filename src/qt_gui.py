@@ -31,11 +31,14 @@ from PySide2.QtWidgets import (
     QStatusBar, QSlider, QLabel, QPushButton, QFileDialog, QMessageBox,
     QFrame, QSizePolicy, QAction, QActionGroup, QStyle, QMenu,
     QDialog, QScrollArea, QComboBox, QGroupBox, QCheckBox,
-    QGraphicsOpacityEffect
+    QGraphicsOpacityEffect, QTreeView, QStyledItemDelegate, QAbstractItemView
 )
 from PySide2.QtOpenGL import QGLWidget
-from PySide2.QtCore import Qt, Slot, QSize, QTimer
-from PySide2.QtGui import QIcon, QFont, QPalette, QColor, QKeySequence, QImage, QPixmap, QPainter
+from PySide2.QtCore import Qt, Slot, QSize, QTimer, QModelIndex
+from PySide2.QtGui import (
+    QIcon, QFont, QPalette, QColor, QKeySequence, QImage, QPixmap, QPainter,
+    QStandardItemModel, QStandardItem
+)
 from PySide2.QtWidgets import QShortcut
 from shiboken2 import wrapInstance
 
@@ -48,180 +51,7 @@ from .image_processing import (
 )
 from .loaders import DicomLoadWorker, DicomLoadResult, VideoLoadWorker, LoadProgressDialog
 from .viewport import Viewport, ViewportManager, LayoutButtonWidget
-
-
-class FileListWidget(QWidget):
-    """Left panel with file list and controls."""
-
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setup_ui()
-        
-    def setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(5)
-        
-        # Header row with title and icon buttons
-        header_row = QWidget()
-        header_layout = QHBoxLayout(header_row)
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(5)
-        
-        header = QLabel(" Files")
-        header.setFont(QFont("lucide", 12, QFont.Bold))
-        header.setStyleSheet("color: #ffffff; padding: 5px;")
-        header_layout.addWidget(header)
-        
-        header_layout.addStretch()
-        
-        # Icon button style
-        icon_btn_style = """
-            QPushButton {
-                background-color: transparent;
-                border: 1px solid #3e3e42;
-                border-radius: 4px;
-                font-family: 'lucide';
-                font-size: 14px;
-                color: #ffffff;
-            }
-            QPushButton:hover {
-                background-color: #0078d4;
-                border-color: #0078d4;
-            }
-        """
-        
-        # Open File button (icon only)
-        self.open_file_btn = QPushButton("\ue0cd")  # file-plus
-        self.open_file_btn.setFixedSize(28, 28)
-        self.open_file_btn.setToolTip("Open File")
-        self.open_file_btn.setStyleSheet(icon_btn_style)
-        header_layout.addWidget(self.open_file_btn)
-        
-        # Open Folder button (icon only)
-        self.open_folder_btn = QPushButton("\ue246")  # folder-open
-        self.open_folder_btn.setFixedSize(28, 28)
-        self.open_folder_btn.setToolTip("Open Folder")
-        self.open_folder_btn.setStyleSheet(icon_btn_style)
-        header_layout.addWidget(self.open_folder_btn)
-        
-        layout.addWidget(header_row)
-        
-        # File list
-        self.file_list = QListWidget()
-        self.file_list.setStyleSheet("""
-            QListWidget {
-                background-color: #2d2d30;
-                color: #ffffff;
-                border: 1px solid #3e3e42;
-                border-radius: 4px;
-            }
-            QListWidget::item {
-                padding: 8px;
-                border-bottom: 1px solid #3e3e42;
-            }
-            QListWidget::item:selected {
-                background-color: #0078d4;
-            }
-            QListWidget::item:hover {
-                background-color: #3e3e42;
-            }
-        """)
-        layout.addWidget(self.file_list)
-        
-        # Patient Info Section
-        patient_header = QLabel(" Patient Info")
-        patient_header.setFont(QFont("lucide", 11, QFont.Bold))
-        patient_header.setStyleSheet("color: #ffffff; padding: 5px 5px 0px 5px; margin-top: 8px;")
-        layout.addWidget(patient_header)
-        
-        # Patient info container
-        self.patient_info = QLabel("No file loaded")
-        self.patient_info.setStyleSheet("""
-            QLabel {
-                color: #aaaaaa;
-                font-size: 11px;
-                padding: 5px;
-                background-color: #2d2d30;
-                border: 1px solid #3e3e42;
-                border-radius: 4px;
-            }
-        """)
-        self.patient_info.setWordWrap(True)
-        layout.addWidget(self.patient_info)
-        
-        # Info label
-        self.info_label = QLabel("No files loaded")
-        self.info_label.setStyleSheet("color: #888888; font-size: 11px;")
-        self.info_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.info_label)
-    
-    def add_file(self, filepath, info=None):
-        """Add a file to the list if not already present."""
-        # Check for duplicates
-        if self.has_file(filepath):
-            return
-        
-        filename = os.path.basename(filepath)
-        item = QListWidgetItem(f" {filename}")
-        item.setData(Qt.UserRole, filepath)
-        if info:
-            item.setToolTip(f"{filepath}\n{info}")
-            # Store metadata for display
-            item.setData(Qt.UserRole + 1, info)
-        self.file_list.addItem(item)
-        self.update_info()
-    
-    def has_file(self, filepath):
-        """Check if file is already in the list."""
-        for i in range(self.file_list.count()):
-            item = self.file_list.item(i)
-            if item.data(Qt.UserRole) == filepath:
-                return True
-        return False
-    
-    def select_file(self, filepath):
-        """Select a file in the list by filepath."""
-        for i in range(self.file_list.count()):
-            item = self.file_list.item(i)
-            if item.data(Qt.UserRole) == filepath:
-                self.file_list.setCurrentItem(item)
-                return
-    
-    def update_patient_info(self, metadata):
-        """Update patient info panel with DICOM metadata."""
-        if not metadata:
-            self.patient_info.setText("No metadata available")
-            return
-        
-        lines = []
-        if 'PatientName' in metadata:
-            lines.append(f"<b>Patient:</b> {metadata['PatientName']}")
-        if 'StudyDate' in metadata:
-            date = metadata['StudyDate']
-            # Format YYYYMMDD to YYYY/MM/DD
-            if len(date) == 8:
-                date = f"{date[:4]}/{date[4:6]}/{date[6:]}"
-            lines.append(f"<b>Date:</b> {date}")
-        if 'Modality' in metadata:
-            lines.append(f"<b>Modality:</b> {metadata['Modality']}")
-        if 'Manufacturer' in metadata:
-            lines.append(f"<b>Device:</b> {metadata['Manufacturer']}")
-        if 'InstitutionName' in metadata:
-            lines.append(f"<b>Institution:</b> {metadata['InstitutionName']}")
-        if 'NumberOfFrames' in metadata:
-            lines.append(f"<b>Frames:</b> {metadata['NumberOfFrames']}")
-        
-        if lines:
-            self.patient_info.setText("<br>".join(lines))
-        else:
-            self.patient_info.setText("No metadata available")
-    
-    def update_info(self):
-        """Update the info label."""
-        count = self.file_list.count()
-        self.info_label.setText(f"{count} file(s) loaded")
+from .study_browser import FileListWidget, ThumbnailCache
 
 
 class ToolbarWidget(QToolBar):
