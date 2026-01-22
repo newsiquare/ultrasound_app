@@ -959,6 +959,11 @@ class UltrasoundViewerWindow(QMainWindow):
         self.lut_overlay_timer.timeout.connect(self._update_lut_overlay)
         self.lut_overlay_timer.start(33)
         
+        # Timer for annotation overlay updates (syncs with FAST view matrix)
+        self.annotation_update_timer = QTimer(self)
+        self.annotation_update_timer.timeout.connect(self._update_annotation_overlay)
+        self.annotation_update_timer.start(50)  # Update every 50ms
+        
     def setup_ui(self):
         self.setWindowTitle("🔷 Ultrasound Imaging Software")
         self.setMinimumSize(1200, 800)
@@ -1492,9 +1497,7 @@ class UltrasoundViewerWindow(QMainWindow):
             self.fast_view.addRenderer(self.renderer)
             # Note: Do NOT call reinitialize() here - it resets internal size to 400x300
             
-            # Re-add annotation renderer after removeAllRenderers
-            if self.fast_annotation_manager:
-                self.fast_annotation_manager.ensure_renderer_added()
+            # Note: FAST LineRenderer is disabled - Qt AnnotationOverlay handles all rendering
             
             # Start computation thread
             self.computation_thread.start()
@@ -1514,6 +1517,45 @@ class UltrasoundViewerWindow(QMainWindow):
             print(f"Error setting up pipeline: {e}")
             import traceback
             traceback.print_exc()
+
+    def _update_annotation_overlay(self):
+        """
+        Update annotation overlay with current FAST view matrix.
+        
+        This ensures annotations are correctly positioned when the FAST view
+        is zoomed or panned, and triggers repaint of the Qt overlay.
+        """
+        if not self.fast_view or not self.annotation_overlay:
+            return
+        
+        # Get coordinate converter from annotation overlay
+        coord_converter = self.annotation_overlay._coord_converter
+        if not coord_converter:
+            return
+        
+        try:
+            # Get current view matrix and ortho params from FAST view
+            view_matrix = None
+            ortho_params = None
+            
+            try:
+                view_matrix = self.fast_view.getViewMatrix()
+            except Exception:
+                pass
+            
+            try:
+                ortho_params = self.fast_view.getOrthoProjectionParameters()
+            except Exception:
+                pass
+            
+            # Update coordinate converter with view matrix
+            # Returns True if view changed
+            if coord_converter.set_view_matrix(view_matrix, ortho_params):
+                # View changed - trigger repaint
+                self.annotation_overlay.update()
+        except Exception as e:
+            # Silently ignore errors to avoid spam
+            pass
 
     def _set_lut_overlay_enabled(self, enabled: bool):
         self.lut_overlay_enabled = enabled
@@ -1912,15 +1954,12 @@ class UltrasoundViewerWindow(QMainWindow):
     
     def on_measure_added(self, measure):
         """Handle new measurement from overlay."""
-        # Add to FAST annotation manager for rendering (shapes)
-        if self.fast_annotation_manager:
-            self.fast_annotation_manager.add_measure(measure)
-        
-        # Add to overlay's measurement list for text label rendering
+        # Note: FAST LineRenderer is disabled - Qt AnnotationOverlay handles all rendering
+        # Add to overlay's measurement list for rendering
         if self.annotation_overlay:
             if measure not in self.annotation_overlay.measurements:
                 self.annotation_overlay.measurements.append(measure)
-            # Trigger repaint to draw text labels
+            # Trigger repaint to draw shapes and text labels
             self.annotation_overlay.update()
         
         # Show measurement result in status bar
@@ -1930,11 +1969,7 @@ class UltrasoundViewerWindow(QMainWindow):
     
     def clear_all_measures(self):
         """Clear all measurements from the view."""
-        # Clear from FAST annotation manager
-        if self.fast_annotation_manager:
-            self.fast_annotation_manager.measurements.clear()
-            self.fast_annotation_manager._needs_update = True
-            self.fast_annotation_manager.update_renderers()
+        # Note: FAST LineRenderer is disabled - Qt AnnotationOverlay handles all rendering
         
         # Clear from annotation overlay
         if self.annotation_overlay:
@@ -1947,40 +1982,34 @@ class UltrasoundViewerWindow(QMainWindow):
         """Handle annotation deletion from layer panel."""
         if self.annotation_overlay:
             self.annotation_overlay.remove_annotation(annotation)
-        # Also remove from FAST annotation manager
-        if self.fast_annotation_manager:
-            self.fast_annotation_manager.remove_annotation(annotation)
+        # Note: FAST LineRenderer is disabled - Qt AnnotationOverlay handles all rendering
     
     def on_annotation_visibility_changed(self, annotation, visible):
         """Handle annotation visibility toggle from layer panel."""
         if self.annotation_overlay:
             self.annotation_overlay.update()  # Refresh display
-        # Also update FAST annotation manager
-        if self.fast_annotation_manager:
-            self.fast_annotation_manager.set_visibility(annotation, visible)
+        # Note: FAST LineRenderer is disabled - Qt AnnotationOverlay handles all rendering
     
     def on_annotation_class_changed(self, annotation, class_type):
         """Handle annotation class type change from layer panel."""
-        # Update FAST annotation manager to re-render with new color
-        if self.fast_annotation_manager:
-            self.fast_annotation_manager.update_annotation(annotation)
+        # Note: FAST LineRenderer is disabled - Qt AnnotationOverlay handles all rendering
         if self.annotation_overlay:
             self.annotation_overlay.update()  # Refresh display
     
     def on_annotation_added(self, annotation):
-        """Handle new annotation added - sync to FAST annotation manager."""
-        if self.fast_annotation_manager:
-            self.fast_annotation_manager.add_annotation(annotation)
+        """Handle new annotation added."""
+        # Note: FAST LineRenderer is disabled - Qt AnnotationOverlay handles all rendering
+        pass
     
     def on_preview_updated(self, tool_type, points):
-        """Handle annotation preview update - sync to FAST annotation manager."""
-        if self.fast_annotation_manager:
-            self.fast_annotation_manager.set_preview(tool_type, points)
+        """Handle annotation preview update."""
+        # Note: FAST LineRenderer is disabled - Qt AnnotationOverlay handles all rendering
+        pass
     
     def on_preview_cleared(self):
-        """Handle annotation preview cleared - sync to FAST annotation manager."""
-        if self.fast_annotation_manager:
-            self.fast_annotation_manager.clear_preview()
+        """Handle annotation preview cleared."""
+        # Note: FAST LineRenderer is disabled - Qt AnnotationOverlay handles all rendering
+        pass
     
     def on_wl_changed(self, delta_window, delta_level):
         """Handle Window/Level drag changes."""

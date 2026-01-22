@@ -348,8 +348,7 @@ class Viewport(QWidget):
             self.fast_view.removeAllRenderers()
             self.fast_view.addRenderer(self.renderer)
             
-            if self.fast_annotation_manager:
-                self.fast_annotation_manager.ensure_renderer_added()
+            # Note: FAST LineRenderer is disabled - Qt AnnotationOverlay handles all rendering
             
             # Use shared thread if provided, otherwise create own (legacy mode)
             if shared_thread:
@@ -400,12 +399,14 @@ class Viewport(QWidget):
             except Exception as e:
                 print(f"[Viewport {self.viewport_id}] Error removing renderers: {e}")
         
-        # Step 2: Clear annotation manager
-        # This removes all annotation renderers and releases their resources
+        # Step 2: Clear annotation manager (for coordinate converter cleanup)
+        # Note: FAST LineRenderer is disabled - but coord_converter may still have resources
         if self.fast_annotation_manager:
             try:
                 print(f"[Viewport {self.viewport_id}] Clearing annotation manager...")
-                self.fast_annotation_manager.clear_all()
+                # Only clear annotations list, not FAST renderers since they're disabled
+                self.fast_annotation_manager.annotations.clear()
+                self.fast_annotation_manager.measurements.clear()
             except Exception as e:
                 print(f"[Viewport {self.viewport_id}] Error clearing annotations: {e}")
         
@@ -638,6 +639,11 @@ class ViewportManager(QWidget):
         
         # Install application-level event filter
         self._install_event_filter()
+        
+        # Timer for updating annotation overlays (syncs with FAST view matrix)
+        self._annotation_update_timer = QTimer(self)
+        self._annotation_update_timer.timeout.connect(self._update_annotation_overlays)
+        self._annotation_update_timer.start(50)  # Update every 50ms
     
     def _setup_ui(self):
         """Setup manager UI."""
@@ -766,6 +772,46 @@ class ViewportManager(QWidget):
             if app:
                 app.removeEventFilter(self._event_filter)
             self._event_filter = None
+    
+    def _update_annotation_overlays(self):
+        """
+        Update annotation overlays for all viewports with current FAST view matrices.
+        
+        This ensures annotations are correctly positioned when FAST views
+        are zoomed or panned, and triggers repaint of Qt overlays.
+        """
+        for viewport in self.viewports:
+            if not viewport.fast_view or not viewport.annotation_overlay:
+                continue
+            
+            # Get coordinate converter from annotation overlay
+            coord_converter = viewport.annotation_overlay._coord_converter
+            if not coord_converter:
+                continue
+            
+            try:
+                # Get current view matrix and ortho params from FAST view
+                view_matrix = None
+                ortho_params = None
+                
+                try:
+                    view_matrix = viewport.fast_view.getViewMatrix()
+                except Exception:
+                    pass
+                
+                try:
+                    ortho_params = viewport.fast_view.getOrthoProjectionParameters()
+                except Exception:
+                    pass
+                
+                # Update coordinate converter with view matrix
+                # Returns True if view changed
+                if coord_converter.set_view_matrix(view_matrix, ortho_params):
+                    # View changed - trigger repaint
+                    viewport.annotation_overlay.update()
+            except Exception:
+                # Silently ignore errors
+                pass
     
     def ensure_computation_thread_running(self):
         """Ensure the shared computation thread is running."""

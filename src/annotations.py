@@ -901,63 +901,248 @@ class AnnotationOverlay(QWidget):
     
     def paintEvent(self, event):
         """
-        Paint event - annotation shapes are rendered by FAST LineRenderer.
+        Paint event - renders all annotations and measurements using Qt.
         
-        FAST handles:
-        - Completed annotations (via annotation_added signal)
-        - Preview during drawing (via preview_updated signal)
+        This is now the primary rendering method for annotations, replacing
+        FAST LineRenderer to ensure annotations remain visible when video
+        is paused and correctly follow zoom/pan transformations.
         
         Qt Overlay handles:
-        - Measurement text labels (because FAST TextRenderer doesn't support arbitrary positions)
+        - Completed annotations (lines, rectangles, polygons)
+        - Completed measurements (distance, angle, area, perimeter, ellipse)
+        - Preview during drawing
+        - Measurement text labels
         """
-        # Draw measurement text labels using Qt
-        if self.measurements and self._coord_converter:
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.Antialiasing)
-            painter.setRenderHint(QPainter.TextAntialiasing)
+        if not self._coord_converter:
+            return
+        
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.TextAntialiasing)
+        
+        # ===== DRAW COMPLETED ANNOTATIONS =====
+        for annotation in self.annotations:
+            if not annotation.visible:
+                continue
+            self._draw_annotation_with_transform(painter, annotation)
+        
+        # ===== DRAW COMPLETED MEASUREMENTS =====
+        for measure in self.measurements:
+            if not measure.visible or not measure.completed:
+                continue
+            self._draw_measure_with_transform(painter, measure)
+        
+        # ===== DRAW PREVIEW (current drawing) =====
+        self._draw_preview_with_transform(painter)
+        
+        # ===== DRAW MEASUREMENT TEXT LABELS =====
+        for measure in self.measurements:
+            if not measure.visible or not measure.completed:
+                continue
+            self._draw_measure_label(painter, measure)
+        
+        painter.end()
+    
+    def _transform_point(self, x: float, y: float) -> Tuple[float, float]:
+        """Transform image coordinates to widget coordinates using coord_converter."""
+        if self._coord_converter:
+            return self._coord_converter.image_to_widget(x, y)
+        return (x, y)
+    
+    def _widget_to_image(self, x: float, y: float) -> Tuple[float, float]:
+        """Transform widget coordinates to image coordinates using coord_converter."""
+        if self._coord_converter:
+            return self._coord_converter.widget_to_image(x, y)
+        return (x, y)
+    
+    def _draw_annotation_with_transform(self, painter, annotation):
+        """Draw a single annotation using Qt with coordinate transformation."""
+        # Convert color tuple to QColor
+        r, g, b = annotation.color
+        qcolor = QColor(int(r * 255), int(g * 255), int(b * 255))
+        pen = QPen(qcolor, 2 if not annotation.selected else 3)
+        painter.setPen(pen)
+        
+        ann_type = type(annotation).__name__
+        
+        if ann_type == 'LineAnnotation' and len(annotation.points) >= 2:
+            p1 = self._transform_point(annotation.points[0][0], annotation.points[0][1])
+            p2 = self._transform_point(annotation.points[1][0], annotation.points[1][1])
+            painter.drawLine(QPoint(int(p1[0]), int(p1[1])), QPoint(int(p2[0]), int(p2[1])))
             
-            for measure in self.measurements:
-                if not measure.visible or not measure.completed:
-                    continue
+        elif ann_type == 'RectAnnotation' and len(annotation.points) >= 2:
+            corners = annotation.get_corners()
+            if len(corners) >= 4:
+                # Transform all corners
+                tc = [self._transform_point(c[0], c[1]) for c in corners]
+                painter.setBrush(QBrush(QColor(int(r * 255), int(g * 255), int(b * 255), 30)))
+                p1 = QPoint(int(tc[0][0]), int(tc[0][1]))
+                p3 = QPoint(int(tc[2][0]), int(tc[2][1]))
+                rect = QRect(p1, p3).normalized()
+                painter.drawRect(rect)
+                painter.setBrush(Qt.NoBrush)
                 
-                label_text = measure.get_label_text()
-                if not label_text:
-                    continue
-                
-                # Get label position in image coordinates
-                img_x, img_y = measure.get_label_position()
-                
-                # Convert image coordinates to widget coordinates
-                # Using the inverse of widget_to_image
-                scale = self._coord_converter._scale
-                offset_x = self._coord_converter._offset_x
-                offset_y = self._coord_converter._offset_y
-                
-                widget_x = img_x * scale + offset_x
-                widget_y = img_y * scale + offset_y
-                
-                # Get color for this measure type
-                color = MEASURE_COLORS.get(measure.measure_type, (0.0, 1.0, 0.5))
-                qcolor = QColor(int(color[0] * 255), int(color[1] * 255), int(color[2] * 255))
-                
-                # Draw text with background for readability
-                font = QFont("Arial", 12, QFont.Bold)
-                painter.setFont(font)
-                
-                # Calculate text rect
-                metrics = painter.fontMetrics()
-                text_rect = metrics.boundingRect(label_text)
-                text_rect.moveCenter(QPoint(int(widget_x), int(widget_y)))
-                
-                # Draw semi-transparent background
-                bg_rect = text_rect.adjusted(-4, -2, 4, 2)
-                painter.fillRect(bg_rect, QColor(0, 0, 0, 160))
-                
-                # Draw text
-                painter.setPen(qcolor)
-                painter.drawText(text_rect, Qt.AlignCenter, label_text)
+        elif ann_type == 'PolygonAnnotation' and len(annotation.points) >= 2:
+            path = QPainterPath()
+            tp0 = self._transform_point(annotation.points[0][0], annotation.points[0][1])
+            path.moveTo(tp0[0], tp0[1])
+            for pt in annotation.points[1:]:
+                tp = self._transform_point(pt[0], pt[1])
+                path.lineTo(tp[0], tp[1])
+            if annotation.closed and len(annotation.points) >= 3:
+                path.closeSubpath()
+            painter.drawPath(path)
+    
+    def _draw_measure_with_transform(self, painter, measure):
+        """Draw a measurement using Qt with coordinate transformation."""
+        # Get color for this measure type
+        color = MEASURE_COLORS.get(measure.measure_type, (0.0, 1.0, 0.5))
+        qcolor = QColor(int(color[0] * 255), int(color[1] * 255), int(color[2] * 255))
+        pen = QPen(qcolor, 2)
+        painter.setPen(pen)
+        
+        measure_type = measure.measure_type
+        
+        if measure_type == 'Distance' and len(measure.points) >= 2:
+            p1 = self._transform_point(measure.points[0][0], measure.points[0][1])
+            p2 = self._transform_point(measure.points[1][0], measure.points[1][1])
+            painter.drawLine(QPoint(int(p1[0]), int(p1[1])), QPoint(int(p2[0]), int(p2[1])))
             
-            painter.end()
+        elif measure_type == 'Angle' and len(measure.points) >= 3:
+            # Draw two lines meeting at vertex (point 1)
+            p0 = self._transform_point(measure.points[0][0], measure.points[0][1])
+            p1 = self._transform_point(measure.points[1][0], measure.points[1][1])
+            p2 = self._transform_point(measure.points[2][0], measure.points[2][1])
+            painter.drawLine(QPoint(int(p0[0]), int(p0[1])), QPoint(int(p1[0]), int(p1[1])))
+            painter.drawLine(QPoint(int(p1[0]), int(p1[1])), QPoint(int(p2[0]), int(p2[1])))
+            
+        elif measure_type == 'Area' and len(measure.points) >= 3:
+            # Draw closed polygon
+            path = QPainterPath()
+            tp0 = self._transform_point(measure.points[0][0], measure.points[0][1])
+            path.moveTo(tp0[0], tp0[1])
+            for pt in measure.points[1:]:
+                tp = self._transform_point(pt[0], pt[1])
+                path.lineTo(tp[0], tp[1])
+            path.closeSubpath()
+            painter.drawPath(path)
+            
+        elif measure_type == 'Perimeter' and len(measure.points) >= 2:
+            # Draw open polyline
+            path = QPainterPath()
+            tp0 = self._transform_point(measure.points[0][0], measure.points[0][1])
+            path.moveTo(tp0[0], tp0[1])
+            for pt in measure.points[1:]:
+                tp = self._transform_point(pt[0], pt[1])
+                path.lineTo(tp[0], tp[1])
+            painter.drawPath(path)
+            
+        elif measure_type == 'Ellipse' and len(measure.points) >= 2:
+            # Draw ellipse approximation
+            ellipse_points = measure.get_ellipse_points()
+            if ellipse_points:
+                path = QPainterPath()
+                tp0 = self._transform_point(ellipse_points[0][0], ellipse_points[0][1])
+                path.moveTo(tp0[0], tp0[1])
+                for pt in ellipse_points[1:]:
+                    tp = self._transform_point(pt[0], pt[1])
+                    path.lineTo(tp[0], tp[1])
+                path.closeSubpath()
+                painter.drawPath(path)
+    
+    def _draw_preview_with_transform(self, painter):
+        """Draw preview for current drawing operation with coordinate transformation."""
+        if not self.current_tool:
+            return
+        
+        # Set preview style (dashed cyan line)
+        pen = QPen(QColor(0, 255, 255), 2, Qt.DashLine)
+        
+        # Use measure color for measure tools
+        if self._is_measure_tool(self.current_tool):
+            color = MEASURE_COLORS.get(self.current_tool.capitalize(), (0.0, 1.0, 0.5))
+            pen = QPen(QColor(int(color[0] * 255), int(color[1] * 255), int(color[2] * 255)), 2, Qt.DashLine)
+        
+        painter.setPen(pen)
+        
+        # Draw current annotation being drawn (drag tools: line, rectangle, distance, ellipse)
+        if self.current_annotation and self.is_drawing:
+            ann_type = type(self.current_annotation).__name__
+            
+            if ann_type == 'LineAnnotation' and len(self.current_annotation.points) >= 2:
+                p1 = self._transform_point(self.current_annotation.points[0][0], self.current_annotation.points[0][1])
+                p2 = self._transform_point(self.current_annotation.points[1][0], self.current_annotation.points[1][1])
+                painter.drawLine(QPoint(int(p1[0]), int(p1[1])), QPoint(int(p2[0]), int(p2[1])))
+                
+            elif ann_type == 'RectAnnotation' and len(self.current_annotation.points) >= 2:
+                corners = self.current_annotation.get_corners()
+                if len(corners) >= 4:
+                    tc = [self._transform_point(c[0], c[1]) for c in corners]
+                    p1 = QPoint(int(tc[0][0]), int(tc[0][1]))
+                    p3 = QPoint(int(tc[2][0]), int(tc[2][1]))
+                    rect = QRect(p1, p3).normalized()
+                    painter.drawRect(rect)
+        
+        # Draw current measure being drawn (drag tools)
+        if self.current_measure and self.is_drawing:
+            if self.current_tool == 'distance' and len(self.current_measure.points) >= 2:
+                p1 = self._transform_point(self.current_measure.points[0][0], self.current_measure.points[0][1])
+                p2 = self._transform_point(self.current_measure.points[1][0], self.current_measure.points[1][1])
+                painter.drawLine(QPoint(int(p1[0]), int(p1[1])), QPoint(int(p2[0]), int(p2[1])))
+                
+            elif self.current_tool == 'ellipse' and len(self.current_measure.points) >= 2:
+                # Draw rectangle preview for ellipse
+                p1 = self._transform_point(self.current_measure.points[0][0], self.current_measure.points[0][1])
+                p2 = self._transform_point(self.current_measure.points[1][0], self.current_measure.points[1][1])
+                rect = QRect(QPoint(int(p1[0]), int(p1[1])), QPoint(int(p2[0]), int(p2[1]))).normalized()
+                painter.drawEllipse(rect)
+        
+        # Draw multi-point preview (polygon, angle, area, perimeter)
+        if len(self._multi_points) >= 1:
+            path = QPainterPath()
+            tp0 = self._transform_point(self._multi_points[0][0], self._multi_points[0][1])
+            path.moveTo(tp0[0], tp0[1])
+            for pt in self._multi_points[1:]:
+                tp = self._transform_point(pt[0], pt[1])
+                path.lineTo(tp[0], tp[1])
+            # Draw line to current mouse position
+            if self._current_mouse_pos:
+                tp = self._transform_point(self._current_mouse_pos[0], self._current_mouse_pos[1])
+                path.lineTo(tp[0], tp[1])
+            painter.drawPath(path)
+    
+    def _draw_measure_label(self, painter, measure):
+        """Draw measurement text label."""
+        label_text = measure.get_label_text()
+        if not label_text:
+            return
+        
+        # Get label position in image coordinates
+        img_x, img_y = measure.get_label_position()
+        
+        # Transform to widget coordinates
+        widget_x, widget_y = self._transform_point(img_x, img_y)
+        
+        # Get color for this measure type
+        color = MEASURE_COLORS.get(measure.measure_type, (0.0, 1.0, 0.5))
+        qcolor = QColor(int(color[0] * 255), int(color[1] * 255), int(color[2] * 255))
+        
+        # Draw text with background for readability
+        font = QFont("Arial", 12, QFont.Bold)
+        painter.setFont(font)
+        
+        # Calculate text rect
+        metrics = painter.fontMetrics()
+        text_rect = metrics.boundingRect(label_text)
+        text_rect.moveCenter(QPoint(int(widget_x), int(widget_y)))
+        
+        # Draw semi-transparent background
+        bg_rect = text_rect.adjusted(-4, -2, 4, 2)
+        painter.fillRect(bg_rect, QColor(0, 0, 0, 160))
+        
+        # Draw text
+        painter.setPen(qcolor)
+        painter.drawText(text_rect, Qt.AlignCenter, label_text)
     
     def _draw_annotation(self, painter, annotation):
         """Draw a single annotation using Qt."""
@@ -1022,17 +1207,18 @@ class AnnotationOverlay(QWidget):
             return
         
         pos = event.pos()
-        x, y = pos.x(), pos.y()
+        # Convert widget coordinates to image coordinates for storage
+        img_x, img_y = self._widget_to_image(pos.x(), pos.y())
         
         # ===== MEASUREMENT TOOLS =====
         if self._is_measure_tool(self.current_tool):
-            self._handle_measure_press(x, y)
+            self._handle_measure_press(img_x, img_y)
             return
         
         # ===== ANNOTATION TOOLS =====
         # Handle polygon tool - click to add points
         if self.current_tool == 'polygon':
-            self._multi_points.append((x, y))
+            self._multi_points.append((img_x, img_y))
             # Emit preview update for FAST rendering
             self.preview_updated.emit('polygon', list(self._multi_points))
             self.update()
@@ -1047,8 +1233,8 @@ class AnnotationOverlay(QWidget):
             self.current_annotation = RectAnnotation()
         
         if self.current_annotation:
-            self.current_annotation.add_point(x, y)
-            self.current_annotation.add_point(x, y)  # Add second point for dragging
+            self.current_annotation.add_point(img_x, img_y)
+            self.current_annotation.add_point(img_x, img_y)  # Add second point for dragging
             # Emit preview update for FAST rendering
             self.preview_updated.emit(self.current_tool, list(self.current_annotation.points))
         
@@ -1154,7 +1340,6 @@ class AnnotationOverlay(QWidget):
     def mouseMoveEvent(self, event):
         """Update annotation/measurement while dragging or adjust W/L."""
         pos = event.pos()
-        x, y = pos.x(), pos.y()
         
         # Handle W/L mode
         if self.current_tool == 'wl' and self._wl_start_pos is not None:
@@ -1165,8 +1350,11 @@ class AnnotationOverlay(QWidget):
             self.wl_changed.emit(delta_window, delta_level)
             return
         
-        # Track current mouse position for preview
-        self._current_mouse_pos = (x, y)
+        # Convert widget coordinates to image coordinates
+        img_x, img_y = self._widget_to_image(pos.x(), pos.y())
+        
+        # Track current mouse position for preview (in image coordinates)
+        self._current_mouse_pos = (img_x, img_y)
         
         # ===== MEASUREMENT TOOLS - multi-point preview =====
         if self._is_measure_tool(self.current_tool):
@@ -1174,14 +1362,14 @@ class AnnotationOverlay(QWidget):
             
             # Multi-point tools: angle, area, perimeter
             if tool in ('angle', 'area', 'perimeter') and len(self._multi_points) >= 1:
-                preview_points = list(self._multi_points) + [(x, y)]
+                preview_points = list(self._multi_points) + [(img_x, img_y)]
                 self.preview_updated.emit(tool, preview_points)
                 self.update()
                 return
             
             # Drag tools: distance, ellipse
             if tool in ('distance', 'ellipse') and self.is_drawing and self.current_measure:
-                self.current_measure.update_last_point(x, y)
+                self.current_measure.update_last_point(img_x, img_y)
                 self.preview_updated.emit(tool, list(self.current_measure.points))
                 self.update()
                 return
@@ -1190,7 +1378,7 @@ class AnnotationOverlay(QWidget):
         # Handle polygon preview - update preview with mouse position
         if self.current_tool == 'polygon' and len(self._multi_points) >= 1:
             # Emit preview with current points + mouse position
-            preview_points = list(self._multi_points) + [(x, y)]
+            preview_points = list(self._multi_points) + [(img_x, img_y)]
             self.preview_updated.emit('polygon', preview_points)
             self.update()
             return
@@ -1198,8 +1386,8 @@ class AnnotationOverlay(QWidget):
         if not self.is_drawing or not self.current_annotation:
             return
         
-        # Update the last point
-        self.current_annotation.update_last_point(x, y)
+        # Update the last point (in image coordinates)
+        self.current_annotation.update_last_point(img_x, img_y)
         # Emit preview update for FAST rendering
         self.preview_updated.emit(self.current_tool, list(self.current_annotation.points))
         

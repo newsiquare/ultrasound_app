@@ -51,6 +51,10 @@ class CoordinateConverter:
     - Origin (0,0) is at image top-left
     - FAST automatically scales and centers the image to fit the widget
     - We need to account for this transformation
+    
+    Now also supports FAST view matrix for zoom/pan transformations,
+    enabling Qt overlay to correctly position annotations when FAST view
+    is zoomed or panned.
     """
     
     def __init__(self, image_width: int = 512, image_height: int = 512, 
@@ -71,10 +75,22 @@ class CoordinateConverter:
         self.widget_width = image_width
         self.widget_height = image_height
         
-        # Computed transform values
+        # Computed transform values (base transform without view matrix)
         self._scale = 1.0
         self._offset_x = 0.0
         self._offset_y = 0.0
+        
+        # FAST ortho params for zoom (left, right, bottom, top)
+        self._ortho_left = None
+        self._ortho_right = None
+        self._ortho_bottom = None
+        self._ortho_top = None
+        self._has_valid_ortho = False
+        
+        # FAST view matrix translation for pan (tx, ty)
+        self._view_tx = 0.0
+        self._view_ty = 0.0
+        
         self._update_transform()
     
     def set_image_size(self, width: int, height: int):
@@ -92,6 +108,103 @@ class CoordinateConverter:
     def set_pixel_spacing(self, spacing: float):
         """Update pixel spacing."""
         self.pixel_spacing = spacing if spacing > 0 else 1.0
+    
+    def set_view_matrix(self, view_matrix, ortho_params=None):
+        """
+        Update the FAST view matrix for zoom/pan support.
+        
+        This allows the Qt overlay to correctly position annotations
+        when the FAST view is zoomed or panned.
+        
+        Args:
+            view_matrix: 4x4 view matrix containing translation (pan) in [0][3], [1][3]
+            ortho_params: Orthographic projection parameters (left, right, bottom, top, ...)
+        
+        Returns:
+            bool: True if view changed, False otherwise
+        """
+        old_left = self._ortho_left
+        old_right = self._ortho_right
+        old_bottom = self._ortho_bottom
+        old_top = self._ortho_top
+        old_tx = self._view_tx
+        old_ty = self._view_ty
+        
+        self._has_valid_ortho = False
+        
+        # Extract translation from view matrix (pan)
+        if view_matrix is not None and len(view_matrix) >= 2:
+            try:
+                if len(view_matrix[0]) >= 4 and len(view_matrix[1]) >= 4:
+                    self._view_tx = view_matrix[0][3]
+                    self._view_ty = view_matrix[1][3]
+            except (TypeError, IndexError):
+                pass
+        
+        # Extract ortho params (zoom)
+        if ortho_params and len(ortho_params) >= 4:
+            left, right, bottom, top = ortho_params[:4]
+            
+            # Validate ortho params - reject garbage values
+            # Valid values should be within reasonable range relative to image size
+            max_reasonable = max(self.image_width, self.image_height) * 100
+            if (abs(left) < max_reasonable and abs(right) < max_reasonable and
+                abs(bottom) < max_reasonable and abs(top) < max_reasonable):
+                
+                ortho_width = right - left
+                ortho_height = top - bottom
+                
+                # Width and height must be positive and reasonable
+                if ortho_width > 0.1 and ortho_height > 0.1:
+                    self._ortho_left = left
+                    self._ortho_right = right
+                    self._ortho_bottom = bottom
+                    self._ortho_top = top
+                    self._has_valid_ortho = True
+        
+        # Return True if view changed
+        if not self._has_valid_ortho:
+            return False
+        
+        changed = (old_left != self._ortho_left or
+                   old_right != self._ortho_right or
+                   old_bottom != self._ortho_bottom or
+                   old_top != self._ortho_top or
+                   abs(old_tx - self._view_tx) > 0.1 or
+                   abs(old_ty - self._view_ty) > 0.1)
+        return changed
+    
+    def image_to_widget(self, ix: float, iy: float) -> Tuple[float, float]:
+        """
+        Convert image pixel coordinates to widget coordinates.
+        
+        Uses FAST ortho params for zoom and view matrix translation for pan.
+        
+        Args:
+            ix: X coordinate in image pixels
+            iy: Y coordinate in image pixels
+            
+        Returns:
+            (wx, wy) widget coordinates
+        """
+        if self._has_valid_ortho:
+            # Apply translation first (pan shifts image coordinates)
+            ix_shifted = ix + self._view_tx
+            iy_shifted = iy + self._view_ty
+            
+            # Then apply ortho mapping (zoom)
+            # X: [left, right] -> [0, widget_width]
+            wx = (ix_shifted - self._ortho_left) / (self._ortho_right - self._ortho_left) * self.widget_width
+            
+            # Y: [bottom, top] -> [widget_height, 0] (Y-flip: top -> 0, bottom -> h)
+            wy = (self._ortho_top - iy_shifted) / (self._ortho_top - self._ortho_bottom) * self.widget_height
+            
+            return (wx, wy)
+        else:
+            # Fallback: use base transform (image centered in widget, no zoom/pan)
+            wx = ix * self._scale + self._offset_x
+            wy = iy * self._scale + self._offset_y
+            return (wx, wy)
     
     def _update_transform(self):
         """
@@ -120,6 +233,8 @@ class CoordinateConverter:
         """
         Convert widget coordinates to image pixel coordinates.
         
+        Uses FAST ortho params for zoom and view matrix translation for pan.
+        
         Args:
             wx: X coordinate in widget pixels
             wy: Y coordinate in widget pixels
@@ -127,13 +242,28 @@ class CoordinateConverter:
         Returns:
             (ix, iy) image pixel coordinates
         """
-        if self._scale == 0:
-            return (wx, wy)
-        
-        # Remove centering offset, then remove scale
-        ix = (wx - self._offset_x) / self._scale
-        iy = (wy - self._offset_y) / self._scale
-        return (ix, iy)
+        if self._has_valid_ortho:
+            # First inverse ortho mapping (zoom)
+            # X: [0, widget_width] -> [left, right]
+            ix_shifted = wx / self.widget_width * (self._ortho_right - self._ortho_left) + self._ortho_left
+            
+            # Y: [0, widget_height] -> [top, bottom] (Y-flip: 0 -> top, h -> bottom)
+            iy_shifted = self._ortho_top - wy / self.widget_height * (self._ortho_top - self._ortho_bottom)
+            
+            # Then remove translation (pan)
+            ix = ix_shifted - self._view_tx
+            iy = iy_shifted - self._view_ty
+            
+            return (ix, iy)
+        else:
+            # Fallback: use base transform
+            if self._scale == 0:
+                return (wx, wy)
+            
+            # Remove centering offset, then remove scale
+            ix = (wx - self._offset_x) / self._scale
+            iy = (wy - self._offset_y) / self._scale
+            return (ix, iy)
     
     def pixel_to_world(self, px: float, py: float) -> Tuple[float, float, float]:
         """
