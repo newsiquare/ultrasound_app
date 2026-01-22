@@ -2290,9 +2290,59 @@ class UltrasoundViewerWindow(QMainWindow):
             print(f"Image processing active: Filter={filter_name} ({int(self.filter_strength * 100)}%)")
 
     def closeEvent(self, event):
-        """Handle window close."""
-        if self.computation_thread:
-            self.computation_thread.stop()
+        """
+        Handle window close with proper cleanup order.
+        
+        Critical cleanup sequence to prevent mutex lock and bus errors:
+        1. Stop ViewportManager's shared ComputationThread
+        2. Clean up each Viewport's FAST resources (views, renderers)
+        3. Wait briefly for C++ layer to complete cleanup
+        4. Accept close event and let Qt destroy widgets
+        
+        This ensures FAST threads are fully stopped and resources are released
+        before Qt destroys the widget hierarchy.
+        """
+        print("[Cleanup] Application closing...")
+        
+        # CRITICAL: Stop ViewportManager's shared computation thread BEFORE Qt destroys widgets
+        # This prevents "mutex lock failed" error caused by thread accessing destroyed View objects
+        if hasattr(self, 'viewport_manager') and self.viewport_manager:
+            print("[Cleanup] Calling viewport_manager.cleanup()...")
+            try:
+                # This will:
+                # 1. Remove event filter
+                # 2. Stop shared ComputationThread
+                # 3. Call cleanup() on each Viewport
+                #    - Remove all renderers
+                #    - Clear annotation managers
+                #    - Stop individual pipelines
+                #    - Clear object references
+                self.viewport_manager.cleanup()
+                print("[Cleanup] ViewportManager cleanup complete")
+                
+                # Brief delay to ensure FAST's C++ layer completes cleanup
+                # FAST operations may be asynchronous, so we give it time to finish
+                # before Qt destroys the widget hierarchy
+                import time
+                time.sleep(0.05)  # 50ms safety delay
+                print("[Cleanup] Safety delay complete")
+                
+            except Exception as e:
+                print(f"[Cleanup] Error during viewport_manager cleanup: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        # Legacy: Stop old computation thread if exists (for backward compatibility)
+        # This is kept for any code path that might still use the old single-thread approach
+        if hasattr(self, 'computation_thread') and self.computation_thread:
+            print("[Cleanup] Stopping legacy computation thread...")
+            try:
+                self.computation_thread.stop()
+                print("[Cleanup] Legacy thread stopped")
+            except Exception as e:
+                print(f"[Cleanup] Error stopping legacy thread: {e}")
+        
+        print("[Cleanup] Cleanup complete, accepting close event")
         event.accept()
 
 

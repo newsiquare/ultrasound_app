@@ -376,6 +376,51 @@ class Viewport(QWidget):
             self.computation_thread = None
         self.is_playing = False
     
+    def cleanup(self):
+        """
+        Cleanup FAST resources before viewport destruction.
+        
+        This method must be called before Qt destroys the viewport widget to ensure
+        proper cleanup order and prevent bus errors caused by accessing freed memory.
+        
+        Cleanup order:
+        1. Remove all FAST renderers from view
+        2. Clear annotation manager and its renderers
+        3. Stop computation pipeline
+        4. Clear all object references
+        """
+        print(f"[Viewport {self.viewport_id}] Starting cleanup...")
+        
+        # Step 1: Remove all renderers from FAST view
+        # This disconnects renderers before the view is destroyed
+        if self.fast_view:
+            try:
+                print(f"[Viewport {self.viewport_id}] Removing all renderers from view...")
+                self.fast_view.removeAllRenderers()
+            except Exception as e:
+                print(f"[Viewport {self.viewport_id}] Error removing renderers: {e}")
+        
+        # Step 2: Clear annotation manager
+        # This removes all annotation renderers and releases their resources
+        if self.fast_annotation_manager:
+            try:
+                print(f"[Viewport {self.viewport_id}] Clearing annotation manager...")
+                self.fast_annotation_manager.clear_all()
+            except Exception as e:
+                print(f"[Viewport {self.viewport_id}] Error clearing annotations: {e}")
+        
+        # Step 3: Stop the rendering pipeline
+        # This stops any legacy computation thread if it exists
+        self.stop_pipeline()
+        
+        # Step 4: Clear object references to help garbage collection
+        # This ensures Python releases references to C++ objects
+        self.current_streamer = None
+        self.current_file = None
+        self.renderer = None
+        
+        print(f"[Viewport {self.viewport_id}] Cleanup complete")
+    
     def clear(self):
         """Clear the viewport."""
         self.stop_pipeline()
@@ -383,6 +428,7 @@ class Viewport(QWidget):
         self.current_file = None
         if self.fast_view:
             self.fast_view.removeAllRenderers()
+
 
 
 class LayoutButtonWidget(QWidget):
