@@ -52,6 +52,7 @@ from .image_processing import (
 from .loaders import DicomLoadWorker, DicomLoadResult, VideoLoadWorker, LoadProgressDialog
 from .viewport import Viewport, ViewportManager, LayoutButtonWidget
 from .study_browser import FileListWidget, ThumbnailCache
+from .smart_tools import MagnifierWidget, EdgeSnapDetector, RegionGrowingTracer
 
 
 class ToolbarWidget(QToolBar):
@@ -944,6 +945,11 @@ class UltrasoundViewerWindow(QMainWindow):
         self.pipeline_filter_processor = None
         self.pipeline_frame_tap_processor = None
         
+        # Smart clinical tools
+        self._magnifier = MagnifierWidget(self)
+        self._edge_detector = EdgeSnapDetector(snap_radius=20, gradient_threshold=20)
+        self._auto_tracer = RegionGrowingTracer(tolerance=20)
+        
         self.setup_ui()
         self.apply_dark_theme()
         self.connect_signals()
@@ -1064,6 +1070,17 @@ class UltrasoundViewerWindow(QMainWindow):
                 self.annotation_overlay.wl_changed.connect(self.on_wl_changed)
                 self.annotation_overlay.preview_updated.connect(self.on_preview_updated)
                 self.annotation_overlay.preview_cleared.connect(self.on_preview_cleared)
+                
+                # Connect smart tools
+                self.annotation_overlay.set_smart_tools(
+                    self._magnifier,
+                    self._edge_detector,
+                    self._auto_tracer
+                )
+                
+                # Connect frame_tap processor if available
+                if hasattr(vp, 'pipeline_frame_tap_processor') and vp.pipeline_frame_tap_processor:
+                    self.annotation_overlay.set_frame_tap_processor(vp.pipeline_frame_tap_processor)
     
     def _on_active_viewport_changed(self, viewport: Viewport):
         """Handle active viewport change."""
@@ -1871,12 +1888,15 @@ class UltrasoundViewerWindow(QMainWindow):
         tool_names = {
             'line': '─ Line',
             'rectangle': '▭ Rectangle', 
-            'polygon': '⬡ Polygon'
+            'polygon': '⬡ Polygon',
+            'auto_trace': '✨ Auto-Trace'
         }
         
-        # Different help text for polygon tool
+        # Different help text for different tools
         if tool_type == 'polygon':
             self.status_bar.showMessage(f"Annotation: {tool_names.get(tool_type, tool_type)} - Click to add vertices, double-click to complete")
+        elif tool_type == 'auto_trace':
+            self.status_bar.showMessage(f"Annotation: {tool_names.get(tool_type, tool_type)} - Click inside region to auto-trace boundary")
         else:
             self.status_bar.showMessage(f"Annotation: {tool_names.get(tool_type, tool_type)} - Click and drag to draw")
     
@@ -1942,6 +1962,29 @@ class UltrasoundViewerWindow(QMainWindow):
             self.annotation_overlay.update()
         
         self.status_bar.showMessage("All measurements cleared", 3000)
+    
+    def toggle_magnifier(self, enabled=None):
+        """Toggle precision loupe magnifier on/off."""
+        if enabled is None:
+            enabled = not (self.annotation_overlay and self.annotation_overlay._magnifier_enabled)
+        if self.annotation_overlay:
+            self.annotation_overlay.set_magnifier_enabled(enabled)
+        self.status_bar.showMessage(f"Magnifier: {'ON' if enabled else 'OFF'}")
+    
+    def toggle_edge_snap(self, enabled=None):
+        """Toggle smart edge snapping on/off."""
+        if enabled is None:
+            enabled = not (self.annotation_overlay and self.annotation_overlay._edge_snap_enabled)
+        if self.annotation_overlay:
+            self.annotation_overlay.set_edge_snap_enabled(enabled)
+        
+        # Show current settings
+        if enabled and self._edge_detector:
+            radius = self._edge_detector.snap_radius
+            threshold = self._edge_detector.gradient_threshold
+            self.status_bar.showMessage(f"Edge Snap: ON (radius={radius}px, threshold={threshold})", 3000)
+        else:
+            self.status_bar.showMessage(f"Edge Snap: OFF", 3000)
     
     def on_annotation_deleted(self, annotation):
         """Handle annotation deletion from layer panel."""
@@ -2170,6 +2213,7 @@ class UltrasoundViewerWindow(QMainWindow):
         self.shortcut_annotate = QShortcut(QKeySequence("A"), self)
         self.shortcut_annotate.activated.connect(lambda: self.toolbar.annotate_button.click())
         
+        # Annotation tools - 1, 2, 3 for quick switching
         self.shortcut_line = QShortcut(QKeySequence("1"), self)
         self.shortcut_line.activated.connect(lambda: self.set_annotation_tool('line'))
         
@@ -2178,6 +2222,16 @@ class UltrasoundViewerWindow(QMainWindow):
         
         self.shortcut_polygon = QShortcut(QKeySequence("3"), self)
         self.shortcut_polygon.activated.connect(lambda: self.set_annotation_tool('polygon'))
+        
+        # Smart tools shortcuts
+        self.shortcut_magnifier = QShortcut(QKeySequence("M"), self)
+        self.shortcut_magnifier.activated.connect(lambda: self.toggle_magnifier())
+        
+        self.shortcut_edge_snap = QShortcut(QKeySequence("E"), self)
+        self.shortcut_edge_snap.activated.connect(lambda: self.toggle_edge_snap())
+        
+        self.shortcut_auto_trace = QShortcut(QKeySequence("T"), self)
+        self.shortcut_auto_trace.activated.connect(lambda: self.set_annotation_tool('auto_trace'))
         
         self.shortcut_escape = QShortcut(QKeySequence(Qt.Key_Escape), self)
         self.shortcut_escape.activated.connect(lambda: self.set_tool('none'))

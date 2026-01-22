@@ -880,12 +880,47 @@ class AnnotationOverlay(QWidget):
         # Current mouse position for preview line
         self._current_mouse_pos = None
         
+        # Edge snap visual feedback
+        self._edge_snap_active = False  # True when currently snapped to edge
+        self._edge_snap_position = None  # (x, y) of snapped position for visual indicator
+        
         # Coordinate converter for image-to-widget transformation
         self._coord_converter = None
+        
+        # Smart tools integration
+        self._frame_tap = None  # Reference to FrameTapProcessor
+        self._magnifier = None  # MagnifierWidget instance
+        self._magnifier_enabled = False
+        self._edge_detector = None  # EdgeSnapDetector instance
+        self._edge_snap_enabled = False
+        self._auto_tracer = None  # RegionGrowingTracer instance
+    
     
     def set_coord_converter(self, converter):
         """Set the coordinate converter for image-to-widget transformation."""
         self._coord_converter = converter
+    
+    def set_frame_tap_processor(self, processor):
+        """Set FrameTapProcessor for raw frame access (needed by smart tools)."""
+        self._frame_tap = processor
+    
+    def set_smart_tools(self, magnifier, edge_detector, auto_tracer):
+        """Set smart tools instances."""
+        self._magnifier = magnifier
+        self._edge_detector = edge_detector
+        self._auto_tracer = auto_tracer
+    
+    def set_magnifier_enabled(self, enabled: bool):
+        """Enable/disable magnifier."""
+        self._magnifier_enabled = enabled
+        if not enabled and self._magnifier:
+            self._magnifier.hide()
+    
+    def set_edge_snap_enabled(self, enabled: bool):
+        """Enable/disable edge snapping."""
+        self._edge_snap_enabled = enabled
+        if self._edge_detector:
+            self._edge_detector.set_enabled(enabled)
     
     def set_tool(self, tool_type):
         """Set the current annotation or measurement tool."""
@@ -909,13 +944,27 @@ class AnnotationOverlay(QWidget):
         
         Qt Overlay handles:
         - Measurement text labels (because FAST TextRenderer doesn't support arbitrary positions)
+        - Edge snap visual feedback (green circle indicator)
         """
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.TextAntialiasing)
+        
+        # Draw edge snap indicator if active
+        if self._edge_snap_active and self._edge_snap_position:
+            x, y = self._edge_snap_position
+            # Draw green circle at snapped position
+            painter.setPen(QPen(QColor(0, 255, 0), 3))  # Bright green, thick line
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(int(x - 8), int(y - 8), 16, 16)  # 16px diameter circle
+            
+            # Draw crosshair at center
+            painter.setPen(QPen(QColor(0, 255, 0), 2))
+            painter.drawLine(int(x - 5), int(y), int(x + 5), int(y))  # Horizontal
+            painter.drawLine(int(x), int(y - 5), int(x), int(y + 5))  # Vertical
+        
         # Draw measurement text labels using Qt
         if self.measurements and self._coord_converter:
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.Antialiasing)
-            painter.setRenderHint(QPainter.TextAntialiasing)
-            
             for measure in self.measurements:
                 if not measure.visible or not measure.completed:
                     continue
@@ -1036,6 +1085,31 @@ class AnnotationOverlay(QWidget):
             # Emit preview update for FAST rendering
             self.preview_updated.emit('polygon', list(self._multi_points))
             self.update()
+            return
+        
+        # Handle auto-trace tool - single click to trace region
+        if self.current_tool == 'auto_trace':
+            if self._auto_tracer and self._frame_tap:
+                frame, _ = self._frame_tap.getLatestFrame()
+                if frame is not None:
+                    # Convert to image coordinates
+                    img_x, img_y = x, y
+                    if self._coord_converter:
+                        img_x, img_y = self._coord_converter.widget_to_image(x, y)
+                    
+                    # Run auto-trace
+                    boundary_points = self._auto_tracer.trace_region(frame, (int(img_x), int(img_y)))
+                    
+                    if boundary_points and len(boundary_points) >= 3:
+                        # Create polygon from boundary
+                        polygon = PolygonAnnotation(closed=True)
+                        for pt in boundary_points:
+                            polygon.add_point(pt[0], pt[1])
+                        polygon.complete()
+                        
+                        self.annotations.append(polygon)
+                        self.annotation_added.emit(polygon)
+                        self.update()
             return
         
         self.is_drawing = True
@@ -1167,6 +1241,52 @@ class AnnotationOverlay(QWidget):
         
         # Track current mouse position for preview
         self._current_mouse_pos = (x, y)
+        
+        # ===== SMART TOOLS INTEGRATION =====
+        # Get image coordinates for smart tools processing
+        img_x, img_y = x, y
+        if self._coord_converter:
+            img_x, img_y = self._coord_converter.widget_to_image(x, y)
+        
+        # Update magnifier if enabled
+        if self._magnifier_enabled and self._magnifier and self._frame_tap:
+            frame, _ = self._frame_tap.getLatestFrame()
+            if frame is not None:
+                self._magnifier.update_view(frame, int(img_x), int(img_y))
+                self._magnifier.position_near_cursor(pos, offset_x=20, offset_y=20)
+                self._magnifier.show()
+        elif self._magnifier:
+            self._magnifier.hide()
+        
+        # Apply edge snapping if enabled (for measurement tools only  )
+        # Hold Ctrl to temporarily disable snapping
+        if (self._edge_snap_enabled and 
+            self._edge_detector and 
+            self._frame_tap and
+            self._is_measure_tool(self.current_tool) and
+            not (event.modifiers() & Qt.ControlModifier)):
+            
+            frame, _ = self._frame_tap.getLatestFrame()
+            if frame is not None:
+                snapped = self._edge_detector.find_nearest_edge(frame, (int(img_x), int(img_y)))
+                if snapped:
+                    img_x, img_y = snapped
+                    # Convert back to widget coordinates for display
+                    if self._coord_converter:
+                        x = img_x * self._coord_converter._scale + self._coord_converter._offset_x
+                        y = img_y * self._coord_converter._scale + self._coord_converter._offset_y
+                    
+                    # Set visual feedback for snapped position
+                    self._edge_snap_active = True
+                    self._edge_snap_position = (x, y)
+                else:
+                    # No snap found
+                    self._edge_snap_active = False
+                    self._edge_snap_position = None
+        else:
+            # Edge snapping disabled or conditions not met
+            self._edge_snap_active = False
+            self._edge_snap_position = None
         
         # ===== MEASUREMENT TOOLS - multi-point preview =====
         if self._is_measure_tool(self.current_tool):
