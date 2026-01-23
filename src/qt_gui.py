@@ -78,6 +78,8 @@ class ToolbarWidget(QToolBar):
                 border-bottom: 3px solid transparent;
                 border-radius: 4px;
                 padding: 4px;
+                padding-left: 10px;
+                padding-right: 7px;
                 color: #cccccc;
             }
             QToolButton:hover {
@@ -95,7 +97,35 @@ class ToolbarWidget(QToolBar):
             QToolButton:pressed {
                 background-color: #005a9e;
             }
-            /* Menu Button Specific Style */
+            /* Menu Button Specific Style (for Split Buttons) */
+            QToolButton[is_dropdown="true"] {
+                padding-right: 20px; /* Make space for the menu button */
+                padding-left: 10px;
+            }
+            QToolButton::menu-button {
+                border-left: 1px solid #505050;
+                width: 20px;
+                /* Optional: nice background for the arrow area */
+                border-top-right-radius: 4px;
+                border-bottom-right-radius: 4px;
+                margin-bottom: 3px; /* Prevent covering bottom border */
+            }
+            QToolButton::menu-button:hover {
+                background-color: #505050;
+            }
+            QToolButton::menu-indicator {
+                image: none; /* We use the default arrow or none if managed by style, strictly relying on default arrow here for now or add explicit one if resizing needed */
+                width: 10px;
+                height: 10px;
+                subcontrol-position: center center;
+                subcontrol-origin: padding;
+            }
+            /* Explicit fallback if needed, but usually qt draws it. 
+               Let's try standard styling first. If image: none is set, it disappears!
+               So removing 'image: none' from previous menuButton targeting if it conflicts,
+               but let's keep the specific #menuButton one separate. */
+            
+            /* The specific #menuButton (Gear icon) is NOT a split button, it is InstantPopup */
             QToolButton#menuButton {
                 border-left: 1px solid #505050;
                 padding-left: 8px;
@@ -103,6 +133,7 @@ class ToolbarWidget(QToolBar):
             QToolButton#menuButton::menu-indicator {
                 image: none;
             }
+
             /* Unified QMenu Style for All Dropdowns */
             QMenu {
                 background-color: #2d2d30;
@@ -159,10 +190,11 @@ class ToolbarWidget(QToolBar):
         self.annotate_button.setText("Annotate")
         self.annotate_button.setIcon(QIcon("assets/icons/pen-tool.svg"))
         self.annotate_button.setToolTip("Annotation tools")
+        self.annotate_button.setObjectName("toolButton_Annotate")
+        self.annotate_button.setProperty("is_dropdown", True)
         self.annotate_button.setPopupMode(QToolButton.MenuButtonPopup)
         self.annotate_button.setCheckable(True)
         self.annotate_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.annotate_button.setStyleSheet("padding-right: 20px;")
         
         self.annotate_menu = QMenu(self)
         
@@ -190,10 +222,11 @@ class ToolbarWidget(QToolBar):
         self.measure_button.setText("Measure")
         self.measure_button.setIcon(QIcon("assets/icons/ruler.svg"))
         self.measure_button.setToolTip("Measurement tools")
+        self.measure_button.setObjectName("toolButton_Measure")
+        self.measure_button.setProperty("is_dropdown", True)
         self.measure_button.setPopupMode(QToolButton.MenuButtonPopup)
         self.measure_button.setCheckable(True)
         self.measure_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.measure_button.setStyleSheet("padding-right: 20px;")
         
         self.measure_menu = QMenu(self)
         
@@ -233,9 +266,10 @@ class ToolbarWidget(QToolBar):
         self.colormap_button.setText("LUT")
         self.colormap_button.setIcon(QIcon("assets/icons/palette.svg"))
         self.colormap_button.setToolTip("Color mapping (LUT)")
+        self.colormap_button.setObjectName("toolButton_LUT")
+        self.colormap_button.setProperty("is_dropdown", True)
         self.colormap_button.setPopupMode(QToolButton.MenuButtonPopup)
         self.colormap_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.colormap_button.setStyleSheet("padding-right: 20px;")
         
         self.colormap_menu = QMenu(self)
         self.colormap_group = QActionGroup(self)
@@ -262,9 +296,11 @@ class ToolbarWidget(QToolBar):
         self.filter_button.setText("Filter")
         self.filter_button.setIcon(QIcon("assets/icons/wand.svg"))
         self.filter_button.setToolTip("Image filters")
+        self.filter_button.setObjectName("toolButton_Filter")
+        self.filter_button.setProperty("is_dropdown", True)
         self.filter_button.setPopupMode(QToolButton.MenuButtonPopup)
         self.filter_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.filter_button.setStyleSheet("padding-right: 20px;")
+
         
         self.filter_menu = QMenu(self)
         self.filter_group = QActionGroup(self)
