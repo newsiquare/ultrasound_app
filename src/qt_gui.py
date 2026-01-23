@@ -31,7 +31,8 @@ from PySide2.QtWidgets import (
     QStatusBar, QSlider, QLabel, QPushButton, QFileDialog, QMessageBox,
     QFrame, QSizePolicy, QAction, QActionGroup, QStyle, QMenu,
     QDialog, QScrollArea, QComboBox, QGroupBox, QCheckBox,
-    QGraphicsOpacityEffect, QTreeView, QStyledItemDelegate, QAbstractItemView
+    QGraphicsOpacityEffect, QTreeView, QStyledItemDelegate, QAbstractItemView,
+    QTabWidget, QTextEdit
 )
 from PySide2.QtOpenGL import QGLWidget
 from PySide2.QtCore import Qt, Slot, QSize, QTimer, QModelIndex
@@ -60,23 +61,23 @@ class ToolbarWidget(QToolBar):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setup_ui()
-        
+    
     def setup_ui(self):
         self.setMovable(False)
-        self.setIconSize(QSize(24, 24))
+        self.setIconSize(QSize(20, 20))
         self.setStyleSheet("""
             QToolBar {
                 background-color: #3c3c3c;
                 border: none;
-                padding: 5px;
-                spacing: 5px;
+                padding: 3px;
+                spacing: 3px;
             }
             QToolButton {
                 background-color: transparent;
                 border: 1px solid transparent;
                 border-bottom: 3px solid transparent;
                 border-radius: 4px;
-                padding: 6px;
+                padding: 4px;
                 color: #cccccc;
             }
             QToolButton:hover {
@@ -94,84 +95,65 @@ class ToolbarWidget(QToolBar):
             QToolButton:pressed {
                 background-color: #005a9e;
             }
+            /* Menu Button Specific Style */
+            QToolButton#menuButton {
+                border-left: 1px solid #505050;
+                padding-left: 8px;
+            }
+            QToolButton#menuButton::menu-indicator {
+                image: none;
+            }
         """)
         
-        # Create tool buttons using QToolButton (supports custom fonts for Lucide icons)
-        # Note: Zoom (scroll wheel) and Pan (right-click drag) are always available via FAST's built-in controls
-        
-        # Rotate tool
+        # 1. Rotate
         self.rotate_action = QToolButton(self)
-        self.rotate_action.setText(" Rotate")
-        self.rotate_action.setFont(QFont("lucide", 11))
+        self.rotate_action.setText("Rotate")
+        self.rotate_action.setIcon(QIcon("assets/icons/rotate-ccw.svg"))
         self.rotate_action.setCheckable(True)
         self.rotate_action.setToolTip("Rotate image")
+        self.rotate_action.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.addWidget(self.rotate_action)
                 
-        # Reset View (not checkable - just an action)
+        # 2. Reset View
         self.reset_action = QToolButton(self)
-        self.reset_action.setText(" Reset")
-        self.reset_action.setFont(QFont("lucide", 11))
+        self.reset_action.setText("Reset")
+        self.reset_action.setIcon(QIcon("assets/icons/crosshair.svg"))
         self.reset_action.setCheckable(False)
-        self.reset_action.setToolTip("Reset view to default (fit to window)")
+        self.reset_action.setToolTip("Reset view to default")
+        self.reset_action.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.addWidget(self.reset_action)
         
-        # Window/Level tool
+        # 3. Window/Level
         self.wl_action = QToolButton(self)
-        self.wl_action.setText(" W/L")
-        self.wl_action.setFont(QFont("lucide", 11))
+        self.wl_action.setText("W/L")
+        self.wl_action.setIcon(QIcon("assets/icons/sun.svg"))
         self.wl_action.setCheckable(True)
-        self.wl_action.setToolTip("Window/Level: Drag up/down for brightness, left/right for contrast")
+        self.wl_action.setToolTip("Window/Level Adjustment")
+        self.wl_action.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.addWidget(self.wl_action)
         
-        self.addSeparator()
-        
-        # Annotate tool with dropdown menu
+        # 4. Annotate (Dropdown)
         self.annotate_button = QToolButton(self)
-        self.annotate_button.setText(" Annotate")
-        self.annotate_button.setFont(QFont("lucide", 11))
+        self.annotate_button.setText("Annotate")
+        self.annotate_button.setIcon(QIcon("assets/icons/pen-tool.svg"))
         self.annotate_button.setToolTip("Annotation tools")
         self.annotate_button.setPopupMode(QToolButton.MenuButtonPopup)
         self.annotate_button.setCheckable(True)
-        # Set explicit size to ensure dropdown arrow has enough space
-        self.annotate_button.setStyleSheet("""
-            QToolButton {
-                padding-right: 20px;
-            }
-            QToolButton::menu-button {
-                width: 20px;
-            }
-        """)
+        self.annotate_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.annotate_button.setStyleSheet("padding-right: 20px;")
         
-        # Create annotation menu
         self.annotate_menu = QMenu(self)
-        self.annotate_menu.setStyleSheet("""
-            QMenu {
-                background-color: #2d2d30;
-                color: #ffffff;
-                border: 1px solid #3e3e42;
-                border-radius: 4px;
-                padding: 2px;
-            }
-            QMenu::item {
-                padding: 6px 10px;
-                margin: 0px;
-                border-radius: 3px;
-            }
-            QMenu::item:selected {
-                background-color: #0078d4;
-            }
-            QMenu::indicator {
-                width: 0px;
-                height: 0px;
-            }
-        """)
         
-        # Add annotation tools (use non-checkable actions to avoid indicator space)
-        self.line_action = self.annotate_menu.addAction("─ Line")
-        self.rect_action = self.annotate_menu.addAction("▭ Rectangle")
-        self.polygon_action = self.annotate_menu.addAction("⬡ Polygon")
+        # Add annotation tools with icons
+        self.line_action = self.annotate_menu.addAction("Line")
+        self.line_action.setIcon(QIcon("assets/icons/minus.svg"))
         
-        # Group for exclusive selection
+        self.rect_action = self.annotate_menu.addAction("Rectangle")
+        self.rect_action.setIcon(QIcon("assets/icons/square.svg"))
+        
+        self.polygon_action = self.annotate_menu.addAction("Polygon")
+        self.polygon_action.setIcon(QIcon("assets/icons/hexagon.svg"))
+        
         self.annotate_group = QActionGroup(self)
         self.annotate_group.addAction(self.line_action)
         self.annotate_group.addAction(self.rect_action)
@@ -181,63 +163,38 @@ class ToolbarWidget(QToolBar):
         self.annotate_button.setMenu(self.annotate_menu)
         self.addWidget(self.annotate_button)
         
-        # ===== Measure tool with dropdown menu =====
+        # 5. Measure (Dropdown)
         self.measure_button = QToolButton(self)
-        self.measure_button.setText(" Measure")  # Lucide ruler icon U+E14E
-        self.measure_button.setFont(QFont("lucide", 11))
+        self.measure_button.setText("Measure")
+        self.measure_button.setIcon(QIcon("assets/icons/ruler.svg"))
         self.measure_button.setToolTip("Measurement tools")
         self.measure_button.setPopupMode(QToolButton.MenuButtonPopup)
         self.measure_button.setCheckable(True)
-        self.measure_button.setStyleSheet("""
-            QToolButton {
-                padding-right: 20px;
-            }
-            QToolButton::menu-button {
-                width: 20px;
-            }
-        """)
+        self.measure_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.measure_button.setStyleSheet("padding-right: 20px;")
         
-        # Create measure menu
         self.measure_menu = QMenu(self)
-        self.measure_menu.setStyleSheet("""
-            QMenu {
-                background-color: #2d2d30;
-                color: #ffffff;
-                border: 1px solid #3e3e42;
-                border-radius: 4px;
-                padding: 2px;
-            }
-            QMenu::item {
-                padding: 6px 10px;
-                margin: 0px;
-                border-radius: 3px;
-            }
-            QMenu::item:selected {
-                background-color: #0078d4;
-            }
-            QMenu::indicator {
-                width: 0px;
-                height: 0px;
-            }
-            QMenu::separator {
-                height: 1px;
-                background-color: #606060;
-                margin: 4px 8px;
-            }
-        """)
         
-        # Add measurement tools
-        self.distance_action = self.measure_menu.addAction("📏 Distance")
-        self.angle_action = self.measure_menu.addAction("📐 Angle")
-        self.area_action = self.measure_menu.addAction("⬡ Area")
-        self.perimeter_action = self.measure_menu.addAction("⌢ Perimeter")
-        self.ellipse_action = self.measure_menu.addAction("⬭ Ellipse")
+        # Add measurement tools with icons
+        self.distance_action = self.measure_menu.addAction("Distance")
+        self.distance_action.setIcon(QIcon("assets/icons/ruler.svg"))
         
-        # Add separator and clear action
+        self.angle_action = self.measure_menu.addAction("Angle")
+        self.angle_action.setIcon(QIcon("assets/icons/triangle-right.svg"))
+        
+        self.area_action = self.measure_menu.addAction("Area")
+        self.area_action.setIcon(QIcon("assets/icons/hexagon.svg"))
+        
+        self.perimeter_action = self.measure_menu.addAction("Perimeter")
+        self.perimeter_action.setIcon(QIcon("assets/icons/activity.svg"))
+        
+        self.ellipse_action = self.measure_menu.addAction("Ellipse")
+        self.ellipse_action.setIcon(QIcon("assets/icons/circle.svg"))
+        
         self.measure_menu.addSeparator()
-        self.clear_measures_action = self.measure_menu.addAction("🧹 Clear All")
+        self.clear_measures_action = self.measure_menu.addAction("Clear All")
+        self.clear_measures_action.setIcon(QIcon("assets/icons/trash-2.svg"))
         
-        # Group for exclusive selection (tools only, not clear action)
         self.measure_group = QActionGroup(self)
         self.measure_group.addAction(self.distance_action)
         self.measure_group.addAction(self.angle_action)
@@ -249,61 +206,21 @@ class ToolbarWidget(QToolBar):
         self.measure_button.setMenu(self.measure_menu)
         self.addWidget(self.measure_button)
         
-        self.addSeparator()
-        
-        # ===== Image Processing Tools =====
-        # Colormap dropdown
+        # 6. LUT (Dropdown)
         self.colormap_button = QToolButton(self)
-        self.colormap_button.setText(" LUT")  # palette icon
-        self.colormap_button.setFont(QFont("lucide", 11))
+        self.colormap_button.setText("LUT")
+        self.colormap_button.setIcon(QIcon("assets/icons/palette.svg"))
         self.colormap_button.setToolTip("Color mapping (LUT)")
         self.colormap_button.setPopupMode(QToolButton.MenuButtonPopup)
-        self.colormap_button.setStyleSheet("""
-            QToolButton {
-                padding-right: 20px;
-            }
-            QToolButton::menu-button {
-                width: 20px;
-            }
-        """)
+        self.colormap_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.colormap_button.setStyleSheet("padding-right: 20px;")
         
-        # Create colormap menu
         self.colormap_menu = QMenu(self)
-        self.colormap_menu.setStyleSheet("""
-            QMenu {
-                background-color: #2d2d30;
-                color: #ffffff;
-                border: 1px solid #3e3e42;
-                border-radius: 4px;
-                padding: 2px;
-            }
-            QMenu::item {
-                padding: 6px 10px;
-                margin: 0px;
-                border-radius: 3px;
-            }
-            QMenu::item:selected {
-                background-color: #0078d4;
-            }
-            QMenu::item:checked {
-                background-color: #005a9e;
-            }
-        """)
-        
-        # Add colormap options
         self.colormap_group = QActionGroup(self)
         self.colormap_group.setExclusive(True)
-        
         self.colormap_actions = {}
-        colormap_icons = {
-            'grayscale': '⬜',
-            'hot': '🔥',
-            'cool': '❄️',
-            'bone': '🦴',
-            'viridis': '🌈',
-            'plasma': '💜',
-            'inferno': '🌋',
-        }
+        
+        colormap_icons = {'grayscale': '⬜', 'hot': '🔥', 'cool': '❄️', 'bone': '🦴', 'viridis': '🌈', 'plasma': '💜', 'inferno': '🌋'}
         for cmap in ColormapType:
             display_name = COLORMAP_DISPLAY_NAMES.get(cmap, cmap.value)
             icon = colormap_icons.get(cmap.value, '')
@@ -318,66 +235,36 @@ class ToolbarWidget(QToolBar):
         self.colormap_button.setMenu(self.colormap_menu)
         self.addWidget(self.colormap_button)
         
-        # Filter dropdown
+        # 7. Filter (Dropdown)
         self.filter_button = QToolButton(self)
-        self.filter_button.setText(" Filter")  # sparkles/wand icon
-        self.filter_button.setFont(QFont("lucide", 11))
+        self.filter_button.setText("Filter")
+        self.filter_button.setIcon(QIcon("assets/icons/wand.svg"))
         self.filter_button.setToolTip("Image filters")
         self.filter_button.setPopupMode(QToolButton.MenuButtonPopup)
-        self.filter_button.setStyleSheet("""
-            QToolButton {
-                padding-right: 20px;
-            }
-            QToolButton::menu-button {
-                width: 20px;
-            }
-        """)
+        self.filter_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.filter_button.setStyleSheet("padding-right: 20px;")
         
-        # Create filter menu
         self.filter_menu = QMenu(self)
-        self.filter_menu.setStyleSheet("""
-            QMenu {
-                background-color: #2d2d30;
-                color: #ffffff;
-                border: 1px solid #3e3e42;
-                border-radius: 4px;
-                padding: 2px;
-            }
-            QMenu::item {
-                padding: 6px 10px;
-                margin: 0px;
-                border-radius: 3px;
-            }
-            QMenu::item:selected {
-                background-color: #0078d4;
-            }
-            QMenu::item:checked {
-                background-color: #005a9e;
-            }
-            QMenu::separator {
-                height: 1px;
-                background-color: #606060;
-                margin: 4px 8px;
-            }
-        """)
-        
-        # Add filter options
         self.filter_group = QActionGroup(self)
         self.filter_group.setExclusive(True)
-        
         self.filter_actions = {}
-        filter_icons = {
-            'none': '○',
-            'gaussian': '◉',
-            'median': '◈',
-            'sharpen': '✦',
-            'edge_enhance': '◇',
-            'speckle_reduce': '◎',
+        
+        # Filter icons mapping
+        filter_svgs = {
+            'none': 'assets/icons/circle.svg',
+            'gaussian': 'assets/icons/aperture.svg',
+            'median': 'assets/icons/layers.svg', # reusing layers
+            'sharpen': 'assets/icons/zap.svg',
+            'edge_enhance': 'assets/icons/activity.svg', # reusing activity
+            'speckle_reduce': 'assets/icons/eye.svg',
         }
+        
         for ftype in FilterType:
             display_name = FILTER_DISPLAY_NAMES.get(ftype, ftype.value)
-            icon = filter_icons.get(ftype.value, '')
-            action = self.filter_menu.addAction(f"{icon} {display_name}")
+            icon_path = filter_svgs.get(ftype.value, '')
+            action = self.filter_menu.addAction(display_name)
+            if icon_path:
+                 action.setIcon(QIcon(icon_path))
             action.setCheckable(True)
             action.setData(ftype)
             self.filter_group.addAction(action)
@@ -387,37 +274,84 @@ class ToolbarWidget(QToolBar):
         
         self.filter_menu.addSeparator()
         
-        # Filter strength slider (submenu-style)
         self.filter_strength_action = self.filter_menu.addAction("▸ Strength: 50%")
-        self.filter_strength_action.setEnabled(False)  # Just a label
+        self.filter_strength_action.setEnabled(False)
         
         self.filter_button.setMenu(self.filter_menu)
         self.addWidget(self.filter_button)
         
-        self.addSeparator()
-        
-        # Screenshot
+        # 8. Screenshot
         self.screenshot_action = QToolButton(self)
-        self.screenshot_action.setText(" Screenshot")
-        self.screenshot_action.setFont(QFont("lucide", 11))
+        self.screenshot_action.setText("Screenshot")
+        self.screenshot_action.setIcon(QIcon("assets/icons/camera.svg"))
         self.screenshot_action.setToolTip("Save screenshot")
+        self.screenshot_action.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.addWidget(self.screenshot_action)
         
-        # Settings
-        self.settings_action = QToolButton(self)
-        self.settings_action.setText(" Settings")
-        self.settings_action.setFont(QFont("lucide", 11))
-        self.settings_action.setToolTip("Settings")
-        self.addWidget(self.settings_action)
+        # 9. Spacer
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        spacer.setStyleSheet("background-color: transparent;")
+        self.addWidget(spacer)
         
-        self.addSeparator()
+        # 10. Menu (Gear Icon) - Consolidated Settings
+        self.menu_button = QToolButton(self)
+        self.menu_button.setObjectName("menuButton")
+        self.menu_button.setText("Menu")
+        self.menu_button.setIcon(QIcon("assets/icons/settings.svg"))
+        self.menu_button.setToolTip("Settings & Help")
+        self.menu_button.setPopupMode(QToolButton.InstantPopup) # Always open menu
+        self.menu_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         
-        # Layers panel toggle action (QAction for overflow menu support)
-        self.layers_toggle_action = QToolButton(self)
-        self.layers_toggle_action.setText(" Layers")
-        self.layers_toggle_action.setFont(QFont("lucide", 11))
-        self.layers_toggle_action.setToolTip("Toggle Layers Panel")
-        self.addWidget(self.layers_toggle_action)
+        self.main_menu = QMenu(self)
+        self.main_menu.setStyleSheet("""
+            QMenu {
+                background-color: #2d2d30;
+                color: #ffffff;
+                border: 1px solid #505050;
+                border-radius: 4px;
+                padding: 4px;
+            }
+            QMenu::item {
+                padding: 6px 20px;
+                border-radius: 2px;
+            }
+            QMenu::item:selected {
+                background-color: #0078d4;
+            }
+            QMenu::separator {
+                height: 1px;
+                background-color: #505050;
+                margin: 4px 0;
+            }
+        """)
+        
+        # Menu Actions
+        
+        # Shortcuts
+        self.menu_shortcuts = self.main_menu.addAction("Keyboard Shortcuts")
+        self.menu_shortcuts.setIcon(QIcon("assets/icons/keyboard.svg"))
+        
+        # Help
+        self.menu_help = self.main_menu.addAction("Help")
+        self.menu_help.setIcon(QIcon("assets/icons/help-circle.svg"))
+        
+        # About
+        self.menu_about = self.main_menu.addAction("About")
+        self.menu_about.setIcon(QIcon("assets/icons/info.svg"))
+        
+        self.menu_button.setMenu(self.main_menu)
+        self.addWidget(self.menu_button)
+
+        # 11. Layers Toggle (Moved from Menu)
+        self.layers_button = QToolButton(self)
+        self.layers_button.setText("Layers")
+        self.layers_button.setIcon(QIcon("assets/icons/layers.svg"))
+        self.layers_button.setToolTip("Toggle Layers Panel")
+        self.layers_button.setCheckable(True)
+        self.layers_button.setChecked(True)
+        self.layers_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.addWidget(self.layers_button)
 
 
 class FilterStrengthDialog(QDialog):
@@ -545,67 +479,136 @@ class FilterStrengthDialog(QDialog):
         return self._strength
 
 
-class ShortcutsDialog(QDialog):
-    """Keyboard shortcuts reference dialog."""
+class HelpDialog(QDialog):
+    """Help and info dialog with tabs."""
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, initial_tab=0):
         super().__init__(parent)
-        self.setWindowTitle(" Keyboard Shortcuts")
-        self.setFixedSize(420, 520)
+        self.setWindowTitle("SonoView Pro Help")
+        self.setFixedSize(600, 500)
+        # Keep on top
         self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
         self.setup_ui()
+        self.tabs.setCurrentIndex(initial_tab)
     
     def setup_ui(self):
         self.setStyleSheet("""
             QDialog {
                 background-color: #2d2d30;
+                color: #ffffff;
+            }
+            QTabWidget::pane {
                 border: 1px solid #3e3e42;
-                border-radius: 8px;
+                background: #252526;
+                border-radius: 4px;
             }
-            QLabel {
+            QTabBar::tab {
+                background: #2d2d30;
                 color: #cccccc;
-                font-size: 12px;
+                padding: 8px 20px;
+                border: 1px solid #3e3e42;
+                border-bottom: none;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+                margin-right: 2px;
             }
-            QScrollArea {
-                border: none;
-                background-color: transparent;
+            QTabBar::tab:selected {
+                background: #3e3e42;
+                color: #ffffff;
+                border-bottom: 2px solid #0078d4;
             }
+            QTabBar::tab:hover {
+                background: #3e3e42;
+            }
+            QLabel { color: #cccccc; }
         """)
         
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 15, 20, 15)
-        layout.setSpacing(10)
+        layout.setContentsMargins(10, 10, 10, 10)
         
-        # Title with icon and text
-        title_container = QWidget()
-        title_layout = QHBoxLayout(title_container)
-        title_layout.setContentsMargins(0, 0, 0, 10)
-        title_layout.setSpacing(8)
-        title_layout.setAlignment(Qt.AlignCenter)
+        # Tabs
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs)
         
-        title_icon = QLabel("")  # keyboard icon
-        title_icon.setFont(QFont("lucide", 18))
-        title_icon.setStyleSheet("color: #0078d4;")
-        title_layout.addWidget(title_icon)
+        # 1. Welcome Tab
+        self.tabs.addTab(self.create_welcome_tab(), "Welcome")
         
-        title_text = QLabel("Keyboard Shortcuts")
-        title_text.setFont(QFont("Helvetica Neue", 16, QFont.Bold))
-        title_text.setStyleSheet("color: #ffffff;")
-        title_layout.addWidget(title_text)
+        # 2. Commands Tab (Shortcuts)
+        self.tabs.addTab(self.create_commands_tab(), "Commands")
         
-        layout.addWidget(title_container)
+        # 3. Privacy Tab
+        self.tabs.addTab(self.create_privacy_tab(), "Privacy Policy")
         
-        # Scroll area for shortcuts
+        # 4. About Tab
+        self.tabs.addTab(self.create_about_tab(), "About")
+        
+        # Close button area
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.setFixedWidth(100)
+        close_btn.clicked.connect(self.close)
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3e3e42;
+                color: white;
+                border: 1px solid #505050;
+                border-radius: 4px;
+                padding: 6px;
+            }
+            QPushButton:hover {
+                background-color: #505050;
+                border-color: #0078d4;
+            }
+        """)
+        btn_layout.addWidget(close_btn)
+        layout.addLayout(btn_layout)
+        
+
+
+    def create_welcome_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setAlignment(Qt.AlignCenter)
+        layout.setSpacing(20)
+        
+        title = QLabel("Welcome to SonoView Pro")
+        title.setFont(QFont("Helvetica Neue", 20, QFont.Bold))
+        title.setStyleSheet("color: #ffffff;")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+        
+        subtitle = QLabel("Professional Ultrasound Imaging Software\nStreamlined for efficiency and precision.")
+        subtitle.setFont(QFont("Helvetica Neue", 12))
+        subtitle.setStyleSheet("color: #aaaaaa;")
+        subtitle.setAlignment(Qt.AlignCenter)
+        layout.addWidget(subtitle)
+        
+        # Icon placeholder
+        icon = QLabel("🔷")
+        icon.setFont(QFont("lucide", 48)) 
+        icon.setAlignment(Qt.AlignCenter)
+        layout.addWidget(icon)
+        
+        layout.addStretch()
+        return tab
+
+    def create_commands_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(10, 10, 10, 10)
+        
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("background-color: transparent;")
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         
         content = QWidget()
         content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(15)
         
-        # Define shortcuts by category
+        # Translated shortcuts for consistency with previous version
         shortcuts = {
             "播放控制": [
                 ("Space", "播放 / 暫停"),
@@ -642,31 +645,27 @@ class ShortcutsDialog(QDialog):
             ],
             "面板": [
                 ("P", "切換圖層面板"),
-                ("?", "顯示此快捷鍵面板"),
+                ("?", "顯示此説明面板"),
             ],
         }
         
         for category, items in shortcuts.items():
-            # Category header
             header = QLabel(f"【{category}】")
-            header.setFont(QFont("Helvetica Neue", 12, QFont.Bold))
+            header.setFont(QFont("Helvetica Neue", 11, QFont.Bold))
             header.setStyleSheet("color: #ffffff; margin-top: 5px;")
             content_layout.addWidget(header)
             
-            # Separator line
             line = QFrame()
             line.setFrameShape(QFrame.HLine)
             line.setStyleSheet("background-color: #3e3e42;")
             line.setFixedHeight(1)
             content_layout.addWidget(line)
             
-            # Shortcut items
             for key, desc in items:
                 item_widget = QWidget()
                 item_layout = QHBoxLayout(item_widget)
                 item_layout.setContentsMargins(10, 2, 10, 2)
                 
-                # Key label (styled as keyboard key)
                 key_label = QLabel(key)
                 key_label.setFixedWidth(120)
                 key_label.setStyleSheet("""
@@ -677,27 +676,79 @@ class ShortcutsDialog(QDialog):
                 """)
                 item_layout.addWidget(key_label)
                 
-                # Description
                 desc_label = QLabel(desc)
                 desc_label.setStyleSheet("color: #cccccc;")
                 item_layout.addWidget(desc_label)
                 item_layout.addStretch()
-                
                 content_layout.addWidget(item_widget)
-        
+                
         content_layout.addStretch()
         scroll.setWidget(content)
         layout.addWidget(scroll)
+        return tab
+
+    def create_privacy_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
         
-        # Close hint
-        hint = QLabel("按 Esc 或 ? 關閉")
-        hint.setAlignment(Qt.AlignCenter)
-        hint.setStyleSheet("color: #888888; font-size: 11px; margin-top: 10px;")
-        layout.addWidget(hint)
-    
+        text = QTextEdit()
+        text.setReadOnly(True)
+        text.setStyleSheet("""
+            QTextEdit {
+                background-color: #1e1e1e;
+                border: 1px solid #3e3e42;
+                border-radius: 4px;
+                padding: 10px;
+                color: #cccccc;
+                font-family: sans-serif;
+                font-size: 13px;
+            }
+        """)
+        text.setHtml("""
+            <h3 style='color: white;'>隱私權聲明</h3>
+            <p>您的隱私對我們非常重要。</p>
+            <p><strong>資料收集：</strong><br>
+            SonoView Pro 不會收集、儲存或傳輸任何個人數據或醫療影像至外部伺服器。所有處理均在您的設備上本地執行。</p>
+            <p><strong>檔案存取：</strong><br>
+            應用程式僅存取您明確開啟或儲存的檔案。</p>
+            <p><strong>條款更新：</strong><br>
+            此政策可能會在未來的版本中更新。</p>
+            <br>
+            <p><em>最後更新：2026年1月</em></p>
+        """)
+        layout.addWidget(text)
+        return tab
+
+    def create_about_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setAlignment(Qt.AlignCenter)
+        layout.setSpacing(15)
+        
+        name = QLabel("SonoView Pro")
+        name.setFont(QFont("Helvetica Neue", 20, QFont.Bold))
+        name.setStyleSheet("color: #0078d4;")
+        layout.addWidget(name)
+        
+        ver = QLabel("Version 1.0.0")
+        ver.setStyleSheet("color: white; font-size: 14px;")
+        layout.addWidget(ver)
+        
+        copy = QLabel("© 2026 SonoView Inc.\nAll rights reserved.")
+        copy.setAlignment(Qt.AlignCenter)
+        copy.setStyleSheet("color: #888888;")
+        layout.addWidget(copy)
+        
+        credits_lbl = QLabel("Powered by:\nFAST (Framework for Heterogeneous Medical Image Computing)\nPySide2 (Qt for Python)")
+        credits_lbl.setAlignment(Qt.AlignCenter)
+        credits_lbl.setStyleSheet("color: #666666; margin-top: 20px;")
+        layout.addWidget(credits_lbl)
+        
+        layout.addStretch()
+        return tab
+
     def keyPressEvent(self, event):
-        """Close on Esc or ? key."""
-        if event.key() == Qt.Key_Escape or event.text() == '?':
+        if event.key() == Qt.Key_Escape:
             self.close()
         else:
             super().keyPressEvent(event)
@@ -966,7 +1017,7 @@ class UltrasoundViewerWindow(QMainWindow):
         
     def setup_ui(self):
         self.setWindowTitle("🔷 Ultrasound Imaging Software")
-        self.setMinimumSize(1200, 800)
+        self.setMinimumSize(1400, 900)
         
         # Central widget
         central = QWidget()
@@ -1017,7 +1068,9 @@ class UltrasoundViewerWindow(QMainWindow):
         
         # Save splitter reference for toggle
         self.main_splitter = splitter
-        splitter.setSizes([150, 1000, 250])
+        # Default size: 1400x900
+        # Splitter: [Left(Files)=200, Center(Viewer)=950, Right(Layers)=250]
+        splitter.setSizes([200, 950, 250])
         
         main_layout.addWidget(splitter)
         
@@ -1185,10 +1238,12 @@ class UltrasoundViewerWindow(QMainWindow):
         self.layer_panel.class_type_changed.connect(self.on_annotation_class_changed)
         
         # Layers panel toggle
-        self.toolbar.layers_toggle_action.clicked.connect(self.toggle_layers_panel)
         
-        # Settings -> show shortcuts
-        self.toolbar.settings_action.clicked.connect(self.show_shortcuts_dialog)
+        # Menu Actions
+        self.toolbar.layers_button.toggled.connect(self.toggle_layers_panel)
+        self.toolbar.menu_shortcuts.triggered.connect(lambda: self.show_help_dialog(1)) # Tab 1: Commands
+        self.toolbar.menu_help.triggered.connect(lambda: self.show_help_dialog(0))      # Tab 0: Welcome
+        self.toolbar.menu_about.triggered.connect(lambda: self.show_help_dialog(3))     # Tab 3: About (skip Privacy@2)
         
         # Image processing - Colormap
         self.toolbar.colormap_group.triggered.connect(self.on_colormap_changed)
@@ -2072,14 +2127,14 @@ class UltrasoundViewerWindow(QMainWindow):
             self._saved_layer_width = sizes[2]
             sizes[2] = 0
             self.main_splitter.setSizes(sizes)
-            self.toolbar.layers_toggle_action.setText(" Layers")  # chevron-left: click to open
+            self.toolbar.layers_button.setChecked(False)
             self.status_bar.showMessage("Layers panel hidden")
         else:
             # Panel is hidden, restore it
             restore_width = getattr(self, '_saved_layer_width', 300)
             sizes[2] = restore_width
             self.main_splitter.setSizes(sizes)
-            self.toolbar.layers_toggle_action.setText(" Layers")  # chevron-right: click to close
+            self.toolbar.layers_button.setChecked(True)
             self.status_bar.showMessage("Layers panel shown")
     
     def rotate_image(self):
@@ -2161,7 +2216,7 @@ class UltrasoundViewerWindow(QMainWindow):
         """Setup keyboard shortcuts."""
         # Shortcuts dialog - use Shift+/ for ? key, and also F1
         self.shortcut_help = QShortcut(QKeySequence("?"), self)
-        self.shortcut_help.activated.connect(self.show_shortcuts_dialog)
+        self.shortcut_help.activated.connect(lambda: self.show_help_dialog(1))
         
         # Playback shortcuts
         self.shortcut_space = QShortcut(QKeySequence(Qt.Key_Space), self)
@@ -2235,9 +2290,9 @@ class UltrasoundViewerWindow(QMainWindow):
         self.shortcut_layout_2x2 = QShortcut(QKeySequence("Ctrl+4"), self)
         self.shortcut_layout_2x2.activated.connect(lambda: self.viewport_manager.set_layout('2x2'))
     
-    def show_shortcuts_dialog(self):
-        """Show keyboard shortcuts dialog."""
-        dialog = ShortcutsDialog(self)
+    def show_help_dialog(self, initial_tab=0):
+        """Show the Help/Shortcuts dialog."""
+        dialog = HelpDialog(self, initial_tab=initial_tab)
         dialog.exec_()
     
     # ==================== Image Processing Methods ====================
