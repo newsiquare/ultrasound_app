@@ -103,6 +103,28 @@ class ToolbarWidget(QToolBar):
             QToolButton#menuButton::menu-indicator {
                 image: none;
             }
+            /* Unified QMenu Style for All Dropdowns */
+            QMenu {
+                background-color: #2d2d30;
+                color: #ffffff;
+                border: 1px solid #505050;
+                border-radius: 4px;
+                padding: 4px;
+            }
+            QMenu::item {
+                padding: 6px 20px;
+                border-radius: 2px;
+            }
+            QMenu::item:hover,
+            QMenu::item:selected {
+                background-color: #0078d4;
+                color: #ffffff;
+            }
+            QMenu::separator {
+                height: 1px;
+                background-color: #505050;
+                margin: 4px 0;
+            }
         """)
         
         # 1. Rotate
@@ -304,27 +326,6 @@ class ToolbarWidget(QToolBar):
         self.menu_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         
         self.main_menu = QMenu(self)
-        self.main_menu.setStyleSheet("""
-            QMenu {
-                background-color: #2d2d30;
-                color: #ffffff;
-                border: 1px solid #505050;
-                border-radius: 4px;
-                padding: 4px;
-            }
-            QMenu::item {
-                padding: 6px 20px;
-                border-radius: 2px;
-            }
-            QMenu::item:selected {
-                background-color: #0078d4;
-            }
-            QMenu::separator {
-                height: 1px;
-                background-color: #505050;
-                margin: 4px 0;
-            }
-        """)
         
         # Menu Actions
         
